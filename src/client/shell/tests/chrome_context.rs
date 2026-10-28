@@ -527,3 +527,94 @@ fn close_confirmation_error_becomes_client_owned_overlay_and_stable_workspace_cl
             if params.workspace_id == "ws_1" && !params.close_group
     ));
 }
+
+fn agent_resume_item(state: &ClientShellState) -> Option<(usize, String)> {
+    let Some(ClientShellOverlay::ContextMenu(menu)) = state.overlay.as_ref() else {
+        panic!("context menu");
+    };
+    menu.items()
+        .iter()
+        .enumerate()
+        .find(|(_, item)| item.action == ClientContextMenuAction::ToggleAgentResume)
+        .map(|(index, item)| (index, item.label.to_string()))
+}
+
+#[test]
+fn agent_resume_toggles_require_the_advertised_method() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_endpoint_methods(Some(Vec::new()));
+
+    state.open_pane_context_menu("pane_1".into(), 0, 0);
+    assert_eq!(agent_resume_item(&state), None);
+    state.open_workspace_context_menu("ws_1".into(), 0, 0);
+    assert_eq!(agent_resume_item(&state), None);
+}
+
+#[test]
+fn pane_agent_resume_toggle_is_hidden_when_its_workspace_opted_out() {
+    let mut projected = snapshot();
+    projected.workspaces[0].skip_agent_resume = true;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+
+    state.open_pane_context_menu("pane_1".into(), 0, 0);
+    assert_eq!(agent_resume_item(&state), None);
+    state.open_workspace_context_menu("ws_1".into(), 0, 0);
+    assert_eq!(
+        agent_resume_item(&state).map(|(_, label)| label).as_deref(),
+        Some("Resume agents on restart")
+    );
+}
+
+#[test]
+fn pane_agent_resume_toggle_reflects_and_flips_server_state() {
+    let mut projected = snapshot();
+    projected.panes[0].skip_agent_resume = true;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_endpoint_methods(Some(vec!["pane.set_agent_resume".into()]));
+
+    state.open_pane_context_menu("pane_1".into(), 0, 0);
+    let (index, label) = agent_resume_item(&state).expect("advertised toggle");
+    assert_eq!(label, "Resume on restart");
+    let mut outcome = ClientShellInput::default();
+    state.activate_context_menu_item(index, &mut outcome);
+
+    assert!(matches!(outcome.actions.as_slice(),
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(&request.method, crate::api::schema::Method::PaneSetAgentResume(params)
+                if params.pane_id == "pane_1" && params.enabled)));
+}
+
+#[test]
+fn worktree_group_agent_resume_toggle_targets_every_member() {
+    let mut projected = snapshot();
+    projected.workspaces[0].worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: false,
+    });
+    let mut child = projected.workspaces[0].clone();
+    child.workspace_id = "ws_child".into();
+    child.focused = false;
+    child.worktree.as_mut().unwrap().is_linked_worktree = true;
+    child.skip_agent_resume = true;
+    projected.workspaces.push(child);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+
+    state.open_workspace_context_menu("ws_1".into(), 0, 0);
+    let (index, label) = agent_resume_item(&state).expect("group toggle");
+    assert_eq!(
+        label, "Don't resume group on restart",
+        "a partly opted-out group offers to opt every member out"
+    );
+    let mut outcome = ClientShellInput::default();
+    state.activate_context_menu_item(index, &mut outcome);
+
+    assert!(matches!(outcome.actions.as_slice(),
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(&request.method, crate::api::schema::Method::WorkspaceSetAgentResume(params)
+                if params.workspace_ids == ["ws_1", "ws_child"] && !params.enabled)));
+}

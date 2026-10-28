@@ -48,6 +48,13 @@ crate::cli::projection::cli_params! {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneSetAgentResumeParams {
+    pub pane_id: String,
+    /// Whether restoring the session resumes this pane's agent conversation.
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneLinkActivateParams {
     pub pane_id: String,
     pub viewport_row: u16,

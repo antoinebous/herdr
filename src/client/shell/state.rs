@@ -563,6 +563,7 @@ pub(super) enum ClientContextMenuAction {
     SplitDown,
     Zoom,
     ToggleRightClickPassthrough,
+    ToggleAgentResume,
     ClosePane,
 }
 
@@ -578,6 +579,10 @@ pub(super) enum ClientContextMenuTarget {
         /// Current user group, when the server supports grouping.
         group: Option<String>,
         can_group: bool,
+        /// Workspaces the agent resume toggle applies to: the whole worktree group when closing it would.
+        agent_resume_workspace_ids: Vec<String>,
+        /// `None` hides the toggle because the server does not advertise it.
+        skip_agent_resume: Option<bool>,
     },
     WorkspaceGroup {
         name: String,
@@ -598,6 +603,8 @@ pub(super) enum ClientContextMenuTarget {
         source_pane_id: Option<String>,
         has_manual_label: bool,
         right_click_passthrough: bool,
+        /// `None` hides the toggle because the server does not advertise it.
+        skip_agent_resume: Option<bool>,
     },
 }
 

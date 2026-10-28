@@ -28,6 +28,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
         agent_view_label: None,
         agent_order: Vec::new(),
         workspaces: vec![ClientShellWorkspace {
+            skip_agent_resume: false,
             workspace_id: "ws_1".into(),
             active_tab_id: "tab_1".into(),
             new_workspace_cwd: "/repo".into(),
@@ -53,6 +54,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             agent_status: AgentStatus::Idle,
         }],
         panes: vec![ClientShellPane {
+            skip_agent_resume: false,
             pane_id: "pane_1".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),

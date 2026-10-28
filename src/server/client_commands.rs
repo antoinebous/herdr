@@ -258,6 +258,14 @@ mod tests {
             actual.remove("workspace.set_group").as_deref(),
             Some("fc07f8e5778beeb4830ad4995ce267e9c50f901c6004a4d39aa16d5ab26bd5cb")
         );
+        assert_eq!(
+            actual.remove("pane.set_agent_resume").as_deref(),
+            Some("d1a7031a77fba681be09d1d8f820536d4836559816639f68f5b06890942ef7a0")
+        );
+        assert_eq!(
+            actual.remove("workspace.set_agent_resume").as_deref(),
+            Some("0e42f14241aad2bb261f4813696c7b1d92842481a54c9b85262dfc6a5ea59d8b")
+        );
 
         assert_eq!(
             actual, expected,

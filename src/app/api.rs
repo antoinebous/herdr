@@ -1082,6 +1082,9 @@ impl App {
             Method::WorkspaceSetGroup(params) => {
                 return self.handle_workspace_set_group(request.id, params);
             }
+            Method::WorkspaceSetAgentResume(params) => {
+                return self.handle_workspace_set_agent_resume(request.id, params);
+            }
             Method::WorkspaceReportMetadata(params) => {
                 return self.handle_workspace_report_metadata(request.id, params);
             }
@@ -1184,6 +1187,9 @@ impl App {
             Method::PaneGet(target) => return self.handle_pane_get(request.id, target),
             Method::PaneFocus(target) => return self.handle_pane_focus(request.id, target),
             Method::PaneInputSet(params) => return self.handle_pane_input_set(request.id, params),
+            Method::PaneSetAgentResume(params) => {
+                return self.handle_pane_set_agent_resume(request.id, params);
+            }
             Method::PaneLinkResolve(params) => {
                 return self.handle_pane_link_resolve(request.id, params);
             }

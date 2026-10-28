@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, WorkspaceCloseParams,
     WorkspaceCreateParams, WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams,
-    WorkspaceReportMetadataParams, WorkspaceSetGroupParams, WorkspaceTarget,
+    WorkspaceReportMetadataParams, WorkspaceSetAgentResumeParams, WorkspaceSetGroupParams,
+    WorkspaceTarget,
 };
 use crate::app::App;
 
@@ -166,6 +167,25 @@ impl App {
         }
 
         encode_success(id, ResponseResult::WorkspaceList { workspaces })
+    }
+
+    pub(super) fn handle_workspace_set_agent_resume(
+        &mut self,
+        id: String,
+        params: WorkspaceSetAgentResumeParams,
+    ) -> String {
+        let mut indices = Vec::with_capacity(params.workspace_ids.len());
+        for requested_id in &params.workspace_ids {
+            let Some(index) = self.parse_workspace_id(requested_id) else {
+                return workspace_not_found(id, requested_id);
+            };
+            indices.push(index);
+        }
+        for index in indices {
+            self.state.workspaces[index].skip_agent_resume = !params.enabled;
+        }
+        self.schedule_session_save();
+        encode_success(id, ResponseResult::Ok {})
     }
 
     pub(super) fn handle_workspace_move_block(
@@ -744,6 +764,40 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn workspace_set_agent_resume_applies_to_every_listed_workspace() {
+        let mut app = app_with_worktree_group();
+        let ids = vec![app.public_workspace_id(0), app.public_workspace_id(1)];
+
+        let response = app.handle_workspace_set_agent_resume(
+            "req".into(),
+            WorkspaceSetAgentResumeParams {
+                workspace_ids: ids.clone(),
+                enabled: false,
+            },
+        );
+        let _: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(app
+            .state
+            .workspaces
+            .iter()
+            .all(|workspace| workspace.skip_agent_resume));
+
+        let response = app.handle_workspace_set_agent_resume(
+            "req".into(),
+            WorkspaceSetAgentResumeParams {
+                workspace_ids: vec![ids[1].clone(), "missing".into()],
+                enabled: true,
+            },
+        );
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "workspace_not_found");
+        assert!(
+            app.state.workspaces[1].skip_agent_resume,
+            "an unknown id should reject the whole request"
+        );
     }
 
     #[test]

@@ -196,6 +196,8 @@ pub struct Workspace {
     pub worktree_space: Option<WorktreeSpaceMembership>,
     /// User-defined group name shared by workspaces displayed together.
     pub group: Option<String>,
+    /// Whether restore should leave every agent conversation in this workspace unresumed.
+    pub skip_agent_resume: bool,
     pub(crate) metadata_tokens: crate::metadata_tokens::MetadataTokens,
     pub(crate) metadata_token_sequences: HashMap<String, u64>,
     /// Public pane numbers within this workspace. Closed pane numbers are not reused.
@@ -263,6 +265,7 @@ impl Workspace {
             cached_git_space,
             worktree_space: None,
             group: None,
+            skip_agent_resume: false,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,
@@ -416,6 +419,7 @@ impl Workspace {
                 cached_git_space,
                 worktree_space: None,
                 group: None,
+                skip_agent_resume: false,
                 metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
                 metadata_token_sequences: HashMap::new(),
                 public_pane_numbers,
@@ -1206,6 +1210,7 @@ impl Workspace {
             cached_git_space: None,
             worktree_space: None,
             group: None,
+            skip_agent_resume: false,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,

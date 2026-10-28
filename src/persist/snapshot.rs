@@ -59,6 +59,8 @@ pub struct WorkspaceSnapshot {
     pub worktree_space: Option<crate::workspace::WorktreeSpaceMembership>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skip_agent_resume: bool,
     #[serde(default)]
     pub public_pane_numbers: HashMap<u32, usize>,
     #[serde(default)]
@@ -113,6 +115,8 @@ pub struct PaneSnapshot {
     pub agent_resume: Option<PaneAgentResumeSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skip_agent_resume: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,6 +176,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             identity_cwd,
             worktree_space: None,
             group: None,
+            skip_agent_resume: false,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
             public_tab_numbers: Vec::new(),
@@ -311,6 +316,7 @@ fn capture_workspace(
         identity_cwd,
         worktree_space: ws.worktree_space.clone(),
         group: ws.group.clone(),
+        skip_agent_resume: ws.skip_agent_resume,
         public_pane_numbers: ws
             .public_pane_numbers
             .iter()
@@ -333,7 +339,7 @@ fn capture_tab(
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> TabSnapshot {
     let mut panes = HashMap::new();
-    for id in tab.panes.keys() {
+    for (id, pane) in &tab.panes {
         let terminal_id = tab.terminal_id(*id);
         let terminal = terminal_id.and_then(|id| terminals.get(id));
         let cwd = terminal_id
@@ -392,6 +398,7 @@ fn capture_tab(
                 agent_session,
                 agent_resume,
                 launch_argv,
+                skip_agent_resume: pane.skip_agent_resume,
             },
         );
     }
@@ -711,6 +718,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                skip_agent_resume: false,
             },
         );
         panes.insert(
@@ -723,6 +731,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                skip_agent_resume: false,
             },
         );
 
@@ -733,6 +742,7 @@ mod tests {
                 identity_cwd: PathBuf::from("/home/can/Projects/herdr"),
                 worktree_space: None,
                 group: Some("data".to_string()),
+                skip_agent_resume: false,
                 public_pane_numbers: HashMap::from([(0, 1), (1, 2)]),
                 next_public_pane_number: 3,
                 public_tab_numbers: vec![1],
@@ -965,6 +975,31 @@ mod tests {
             state.workspaces[0].worktree_space
         );
         assert_eq!(snapshot.workspaces[0].group.as_deref(), Some("data"));
+    }
+
+    #[test]
+    fn capture_contract_tracks_agent_resume_opt_outs_and_omits_defaults() {
+        let mut state = state_with_workspaces(&["skipped", "resumed"]);
+        state.workspaces[0].skip_agent_resume = true;
+        let root = state.workspaces[1].tabs[0].root_pane;
+        state.workspaces[1].tabs[0]
+            .panes
+            .get_mut(&root)
+            .unwrap()
+            .skip_agent_resume = true;
+
+        let json = serde_json::to_string(&capture_from_state(&state)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["workspaces"][0]["skip_agent_resume"], true);
+        assert!(
+            value["workspaces"][1].get("skip_agent_resume").is_none(),
+            "the default stays out of session.json so older Herdr versions read it unchanged"
+        );
+
+        let restored = parse_snapshot(&json).unwrap();
+        assert!(restored.workspaces[0].skip_agent_resume);
+        assert!(!restored.workspaces[1].skip_agent_resume);
+        assert!(restored.workspaces[1].tabs[0].panes[&root.raw()].skip_agent_resume);
     }
 
     #[test]
@@ -1417,6 +1452,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                skip_agent_resume: false,
             },
         );
         panes.insert(
@@ -1431,6 +1467,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                skip_agent_resume: false,
             },
         );
 
@@ -1442,6 +1479,7 @@ mod tests {
                 identity_cwd: PathBuf::from("/tmp"),
                 worktree_space: None,
                 group: None,
+                skip_agent_resume: false,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),

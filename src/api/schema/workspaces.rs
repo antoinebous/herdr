@@ -54,6 +54,13 @@ pub struct WorkspaceMoveParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkspaceSetAgentResumeParams {
+    pub workspace_ids: Vec<String>,
+    /// Whether restoring the session resumes agent conversations in these workspaces.
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkspaceMoveBlockParams {
     pub workspace_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

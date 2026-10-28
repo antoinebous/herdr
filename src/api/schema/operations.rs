@@ -206,6 +206,8 @@ mod tests {
             "plugin.pane.open",
             "plugin.pane.focus",
             "plugin.pane.close",
+            "workspace.set_agent_resume",
+            "pane.set_agent_resume",
         ]
         .into_iter()
         .collect::<BTreeSet<_>>();

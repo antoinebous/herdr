@@ -10,6 +10,8 @@ pub struct PaneState {
     pub seen: bool,
     /// Whether unmodified right-click gestures should be forwarded to the pane application.
     pub right_click_passthrough: bool,
+    /// Whether restore should leave this pane's agent conversation unresumed.
+    pub skip_agent_resume: bool,
 }
 
 impl PaneState {
@@ -18,6 +20,7 @@ impl PaneState {
             attached_terminal_id,
             seen: true,
             right_click_passthrough: false,
+            skip_agent_resume: false,
         }
     }
 }

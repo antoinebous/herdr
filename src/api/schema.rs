@@ -146,6 +146,8 @@ operations::define_operations! {
     PluginPaneFocus(PluginPaneFocusParams) => "plugin.pane.focus", true, false;
     PluginPaneClose(PluginPaneCloseParams) => "plugin.pane.close", true, false;
     WorkspaceSetGroup(WorkspaceSetGroupParams) => "workspace.set_group", true, true;
+    WorkspaceSetAgentResume(WorkspaceSetAgentResumeParams) => "workspace.set_agent_resume", true, true;
+    PaneSetAgentResume(PaneSetAgentResumeParams) => "pane.set_agent_resume", true, true;
 }
 
 #[cfg(test)]

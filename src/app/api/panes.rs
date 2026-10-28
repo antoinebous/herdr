@@ -12,9 +12,9 @@ use crate::api::schema::{
     PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
     PaneReportMetadataParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
     PaneScrollParams, PaneSelectionReadParams, PaneSendInputParams, PaneSendKeysParams,
-    PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneSwapReason, PaneSwapResult,
-    PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams, PaneZoomReason,
-    PaneZoomResult, ResponseResult,
+    PaneSendTextParams, PaneSetAgentResumeParams, PaneSplitParams, PaneSwapParams, PaneSwapReason,
+    PaneSwapResult, PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams,
+    PaneZoomReason, PaneZoomResult, ResponseResult,
 };
 use crate::app::actions::{PaneZoomCommand, PaneZoomNoopReason};
 use crate::app::App;
@@ -1485,6 +1485,27 @@ impl App {
         encode_success(id, ResponseResult::Ok {})
     }
 
+    pub(super) fn handle_pane_set_agent_resume(
+        &mut self,
+        id: String,
+        params: PaneSetAgentResumeParams,
+    ) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let Some(pane) = self
+            .state
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|workspace| workspace.pane_state_mut(pane_id))
+        else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        pane.skip_agent_resume = !params.enabled;
+        self.schedule_session_save();
+        encode_success(id, ResponseResult::Ok {})
+    }
+
     pub(super) fn handle_pane_rename(&mut self, id: String, params: PaneRenameParams) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
@@ -2377,6 +2398,37 @@ mod tests {
                 .unwrap()
                 .right_click_passthrough
         );
+    }
+
+    #[test]
+    fn pane_set_agent_resume_changes_only_the_target_pane() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let target = app.state.workspaces[0].tabs[0].root_pane;
+        let other = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        let set = |app: &mut App, enabled| {
+            let response = app.handle_pane_set_agent_resume(
+                "req".into(),
+                PaneSetAgentResumeParams {
+                    pane_id: public_pane_id.clone(),
+                    enabled,
+                },
+            );
+            let response: SuccessResponse = serde_json::from_str(&response).unwrap();
+            assert!(matches!(response.result, ResponseResult::Ok {}));
+        };
+        let skips = |app: &App, pane| {
+            app.state.workspaces[0]
+                .pane_state(pane)
+                .unwrap()
+                .skip_agent_resume
+        };
+
+        set(&mut app, false);
+        assert!(skips(&app, target));
+        assert!(!skips(&app, other));
+
+        set(&mut app, true);
+        assert!(!skips(&app, target));
     }
 
     fn app_with_send_key_runtime(

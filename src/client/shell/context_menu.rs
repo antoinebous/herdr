@@ -74,6 +74,7 @@ impl ClientContextMenuOverlay {
                 source_pane_id,
                 has_manual_label,
                 right_click_passthrough,
+                skip_agent_resume,
                 ..
             } => {
                 let mut items = vec![item("Rename pane", Action::RenamePane)];
@@ -95,8 +96,18 @@ impl ClientContextMenuOverlay {
                         },
                         Action::ToggleRightClickPassthrough,
                     ),
-                    item("Close pane", Action::ClosePane),
                 ]);
+                if let Some(skip_agent_resume) = skip_agent_resume {
+                    items.push(item(
+                        if *skip_agent_resume {
+                            "Resume on restart"
+                        } else {
+                            "Don't resume on restart"
+                        },
+                        Action::ToggleAgentResume,
+                    ));
+                }
+                items.push(item("Close pane", Action::ClosePane));
                 items
             }
         };
@@ -110,6 +121,20 @@ impl ClientContextMenuOverlay {
             if group.is_some() {
                 items.push(item("Remove from group", Action::RemoveFromGroup));
             }
+        }
+        if let ClientContextMenuTarget::Workspace {
+            agent_resume_workspace_ids,
+            skip_agent_resume: Some(skip_agent_resume),
+            ..
+        } = &self.target
+        {
+            let label = match (agent_resume_workspace_ids.len() > 1, *skip_agent_resume) {
+                (true, true) => "Resume group on restart",
+                (true, false) => "Don't resume group on restart",
+                (false, true) => "Resume agents on restart",
+                (false, false) => "Don't resume agents on restart",
+            };
+            items.push(item(label, Action::ToggleAgentResume));
         }
         items
     }
@@ -142,6 +167,35 @@ impl ClientShellState {
         });
         let group = workspace.group.clone();
         let can_group = self.supports_endpoint_method_name("workspace.set_group");
+        let agent_resume_members = match worktree.filter(|_| close_group) {
+            Some(worktree) => snapshot
+                .workspaces
+                .iter()
+                .filter(|member| {
+                    member
+                        .worktree
+                        .as_ref()
+                        .is_some_and(|candidate| candidate.key == worktree.key)
+                })
+                .collect::<Vec<_>>(),
+            None => vec![workspace],
+        };
+        let agent_resume_workspace_ids = agent_resume_members
+            .iter()
+            .map(|member| member.workspace_id.clone())
+            .collect::<Vec<_>>();
+        let skip_agent_resume = self
+            .supports_endpoint_method(&crate::api::schema::Method::WorkspaceSetAgentResume(
+                crate::api::schema::WorkspaceSetAgentResumeParams {
+                    workspace_ids: agent_resume_workspace_ids.clone(),
+                    enabled: true,
+                },
+            ))
+            .then(|| {
+                agent_resume_members
+                    .iter()
+                    .all(|member| member.skip_agent_resume)
+            });
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Workspace {
                 workspace_id,
@@ -152,6 +206,8 @@ impl ClientShellState {
                 collapsed,
                 group,
                 can_group,
+                agent_resume_workspace_ids,
+                skip_agent_resume,
             },
             x,
             y,
@@ -292,6 +348,19 @@ impl ClientShellState {
             .focused_pane_id
             .clone()
             .filter(|focused| focused != &pane_id);
+        // A workspace opt-out overrides the pane flag, so the pane toggle would have no effect.
+        let workspace_skips_agent_resume = snapshot.workspaces.iter().any(|workspace| {
+            workspace.workspace_id == pane.workspace_id && workspace.skip_agent_resume
+        });
+        let skip_agent_resume = self
+            .supports_endpoint_method(&crate::api::schema::Method::PaneSetAgentResume(
+                crate::api::schema::PaneSetAgentResumeParams {
+                    pane_id: pane_id.clone(),
+                    enabled: true,
+                },
+            ))
+            .then_some(pane.skip_agent_resume)
+            .filter(|_| !workspace_skips_agent_resume);
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Pane {
                 pane_id,
@@ -299,6 +368,7 @@ impl ClientShellState {
                 source_pane_id,
                 has_manual_label: pane.label.is_some(),
                 right_click_passthrough: pane.right_click_passthrough,
+                skip_agent_resume,
             },
             x,
             y,
@@ -336,6 +406,32 @@ impl ClientShellState {
             {
                 self.open_group_picker(workspace_id, menu.x, menu.y)
             }
+            ClientContextMenuTarget::Workspace {
+                agent_resume_workspace_ids,
+                skip_agent_resume,
+                ..
+            } if action == ClientContextMenuAction::ToggleAgentResume => self.push_endpoint_method(
+                crate::api::schema::Method::WorkspaceSetAgentResume(
+                    crate::api::schema::WorkspaceSetAgentResumeParams {
+                        workspace_ids: agent_resume_workspace_ids,
+                        enabled: skip_agent_resume.unwrap_or_default(),
+                    },
+                ),
+                outcome,
+            ),
+            ClientContextMenuTarget::Pane {
+                pane_id,
+                skip_agent_resume,
+                ..
+            } if action == ClientContextMenuAction::ToggleAgentResume => self.push_endpoint_method(
+                crate::api::schema::Method::PaneSetAgentResume(
+                    crate::api::schema::PaneSetAgentResumeParams {
+                        pane_id,
+                        enabled: skip_agent_resume.unwrap_or_default(),
+                    },
+                ),
+                outcome,
+            ),
             ClientContextMenuTarget::Workspace {
                 workspace_id,
                 close_group,
