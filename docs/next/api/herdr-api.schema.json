@@ -3218,6 +3218,22 @@
           ],
           "type": "object"
         },
+        "PaneSetAgentResumeParams": {
+          "properties": {
+            "enabled": {
+              "description": "Whether restoring the session resumes this pane's agent conversation.",
+              "type": "boolean"
+            },
+            "pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "enabled"
+          ],
+          "type": "object"
+        },
         "PaneSplitParams": {
           "properties": {
             "cwd": {
@@ -4515,6 +4531,25 @@
             "workspace_id",
             "source",
             "tokens"
+          ],
+          "type": "object"
+        },
+        "WorkspaceSetAgentResumeParams": {
+          "properties": {
+            "enabled": {
+              "description": "Whether restoring the session resumes agent conversations in these workspaces.",
+              "type": "boolean"
+            },
+            "workspace_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "workspace_ids",
+            "enabled"
           ],
           "type": "object"
         },
@@ -6348,6 +6383,38 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkspaceSetGroupParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.set_agent_resume",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceSetAgentResumeParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.set_agent_resume",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneSetAgentResumeParams"
             }
           },
           "required": [

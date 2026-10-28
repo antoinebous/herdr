@@ -369,6 +369,7 @@ fn restore_workspace(
             history.and_then(|history| history.tabs.get(idx)),
             tab_number,
             &workspace_id,
+            snap.skip_agent_resume,
             rows,
             cols,
             runtime_context,
@@ -426,6 +427,7 @@ fn restore_workspace(
             cached_git_space: None,
             worktree_space: snap.worktree_space.clone(),
             group: snap.group.clone(),
+            skip_agent_resume: snap.skip_agent_resume,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,
@@ -494,6 +496,7 @@ fn restore_tab(
     history: Option<&TabHistorySnapshot>,
     number: usize,
     workspace_id: &str,
+    workspace_skips_agent_resume: bool,
     rows: u16,
     cols: u16,
     runtime_context: &RestoreRuntimeContext<'_>,
@@ -545,7 +548,9 @@ fn restore_tab(
             old_id.and_then(|old_id| history.and_then(|history| history.panes.get(old_id)));
         let startup = {
             let mut agent_restore = AgentRestoreState {
-                enabled: runtime_context.resume_agents_on_restore,
+                enabled: runtime_context.resume_agents_on_restore
+                    && !workspace_skips_agent_resume
+                    && !saved_pane.is_some_and(|pane| pane.skip_agent_resume),
                 resumed_sessions: resumed_agent_sessions,
             };
             pane_restore_startup(
@@ -760,6 +765,13 @@ fn restore_tab(
                 }
             }
         }
+    }
+
+    for (id, pane) in &mut panes {
+        pane.skip_agent_resume = reverse_id_map
+            .get(id)
+            .and_then(|old_id| snap.panes.get(old_id))
+            .is_some_and(|saved| saved.skip_agent_resume);
     }
 
     if panes.is_empty() {
@@ -1537,6 +1549,7 @@ mod tests {
                 identity_cwd: cwd.clone(),
                 worktree_space: None,
                 group: None,
+                skip_agent_resume: false,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),
@@ -1559,6 +1572,7 @@ mod tests {
                             }),
                             agent_resume: None,
                             launch_argv: None,
+                            skip_agent_resume: false,
                         },
                     )]),
                     zoomed: false,
@@ -1608,6 +1622,159 @@ mod tests {
         assert_eq!(session.session_ref.value, "opencode-session");
     }
 
+    fn agent_resume_opt_out_snapshot(
+        skip_workspace: bool,
+        skip_first_pane: bool,
+        second_session: &str,
+    ) -> SessionSnapshot {
+        let cwd = std::env::current_dir().unwrap();
+        let pane =
+            |label: &str, session: &str, skip_agent_resume| super::super::snapshot::PaneSnapshot {
+                cwd: cwd.clone(),
+                label: Some(label.into()),
+                agent_name: None,
+                managed_agent_kind: None,
+                agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
+                    source: "herdr:codex".into(),
+                    agent: "codex".into(),
+                    kind: crate::agent_resume::AgentSessionRefKind::Id,
+                    value: session.into(),
+                }),
+                agent_resume: None,
+                launch_argv: None,
+                skip_agent_resume,
+            };
+        SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("workspace".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                worktree_space: None,
+                group: None,
+                skip_agent_resume: skip_workspace,
+                public_pane_numbers: HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: Vec::new(),
+                next_public_tab_number: 0,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Split {
+                        direction: super::super::snapshot::DirectionSnapshot::Horizontal,
+                        ratio: 0.5,
+                        first: Box::new(LayoutSnapshot::Pane(0)),
+                        second: Box::new(LayoutSnapshot::Pane(1)),
+                    },
+                    panes: HashMap::from([
+                        (0, pane("first", "first-session", skip_first_pane)),
+                        (1, pane("second", second_session, false)),
+                    ]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        }
+    }
+
+    /// Per pane label: agent resume pending, persisted session, restored opt-out flag.
+    type RestoredAgentResumePanes = HashMap<String, (bool, Option<String>, bool)>;
+
+    /// Restores the snapshot and reports the workspace opt-out flag and each pane's resume state.
+    fn restore_agent_resume_opt_outs(
+        snapshot: &SessionSnapshot,
+    ) -> (bool, RestoredAgentResumePanes) {
+        let (workspaces, terminals, _runtimes) = restore(
+            snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            true,
+            mpsc::channel(4).0,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let workspace = &workspaces[0];
+        let panes = workspace.tabs[0]
+            .panes
+            .values()
+            .map(|pane| {
+                let terminal = &terminals[&pane.attached_terminal_id];
+                (
+                    terminal.manual_label.clone().unwrap(),
+                    (
+                        terminal.pending_agent_resume_plan.is_some(),
+                        terminal
+                            .persisted_agent_session
+                            .as_ref()
+                            .map(|session| session.session_ref.value.clone()),
+                        pane.skip_agent_resume,
+                    ),
+                )
+            })
+            .collect();
+        (workspace.skip_agent_resume, panes)
+    }
+
+    #[tokio::test]
+    async fn restore_skips_agent_resume_for_opted_out_pane_only() {
+        let (workspace_skips, panes) = restore_agent_resume_opt_outs(
+            &agent_resume_opt_out_snapshot(false, true, "second-session"),
+        );
+
+        assert!(!workspace_skips);
+        assert_eq!(
+            panes["first"],
+            (false, Some("first-session".into()), true),
+            "an opted-out pane starts a shell but keeps its session for a later resume"
+        );
+        assert_eq!(
+            panes["second"],
+            (true, Some("second-session".into()), false)
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_skips_agent_resume_for_every_pane_of_opted_out_workspace() {
+        let (workspace_skips, panes) = restore_agent_resume_opt_outs(
+            &agent_resume_opt_out_snapshot(true, false, "second-session"),
+        );
+
+        assert!(
+            workspace_skips,
+            "the workspace opt-out should survive restore"
+        );
+        assert_eq!(panes["first"], (false, Some("first-session".into()), false));
+        assert_eq!(
+            panes["second"],
+            (false, Some("second-session".into()), false)
+        );
+    }
+
+    #[tokio::test]
+    async fn opted_out_pane_does_not_reserve_its_agent_session() {
+        let (_, panes) = restore_agent_resume_opt_outs(&agent_resume_opt_out_snapshot(
+            false,
+            true,
+            "first-session",
+        ));
+
+        assert!(!panes["first"].0);
+        assert!(
+            panes["second"].0,
+            "another pane with the same session should still resume it"
+        );
+    }
+
     #[tokio::test]
     async fn restore_preserves_public_id_mapping_after_pane_id_remap() {
         let cwd = std::env::current_dir().unwrap();
@@ -1619,6 +1786,7 @@ mod tests {
                 identity_cwd: cwd.clone(),
                 worktree_space: None,
                 group: None,
+                skip_agent_resume: false,
                 public_pane_numbers: HashMap::from([(10, 1), (20, 3)]),
                 next_public_pane_number: 4,
                 public_tab_numbers: vec![5],
@@ -1642,6 +1810,7 @@ mod tests {
                                 agent_session: None,
                                 agent_resume: None,
                                 launch_argv: None,
+                                skip_agent_resume: false,
                             },
                         ),
                         (
@@ -1654,6 +1823,7 @@ mod tests {
                                 agent_session: None,
                                 agent_resume: None,
                                 launch_argv: None,
+                                skip_agent_resume: false,
                             },
                         ),
                     ]),
@@ -1708,6 +1878,7 @@ mod tests {
                     agent_session: None,
                     agent_resume: None,
                     launch_argv: None,
+                    skip_agent_resume: false,
                 },
             )
         };
@@ -1724,6 +1895,7 @@ mod tests {
             }),
             agent_resume: None,
             launch_argv: None,
+            skip_agent_resume: false,
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -1733,6 +1905,7 @@ mod tests {
                 identity_cwd: cwd.clone(),
                 worktree_space: None,
                 group: None,
+                skip_agent_resume: false,
                 public_pane_numbers: HashMap::from([(10, 1), (11, 2), (12, 3), (13, 4)]),
                 next_public_pane_number: 5,
                 public_tab_numbers: vec![1, 3, 4, 5],
@@ -1817,6 +1990,7 @@ mod tests {
             identity_cwd: cwd,
             worktree_space: None,
             group: None,
+            skip_agent_resume: false,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
             public_tab_numbers: Vec::new(),
@@ -1857,6 +2031,7 @@ mod tests {
                 identity_cwd: cwd.clone(),
                 worktree_space: None,
                 group: None,
+                skip_agent_resume: false,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),
@@ -1879,6 +2054,7 @@ mod tests {
                             }),
                             agent_resume: None,
                             launch_argv: None,
+                            skip_agent_resume: false,
                         },
                     )]),
                     zoomed: false,
@@ -2185,6 +2361,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                skip_agent_resume: false,
             },
         );
         let mut history = SessionHistorySnapshot {
@@ -2214,6 +2391,7 @@ mod tests {
                 identity_cwd: cwd,
                 worktree_space: None,
                 group: None,
+                skip_agent_resume: false,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),

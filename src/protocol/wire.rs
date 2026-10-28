@@ -1035,6 +1035,9 @@ pub struct ClientShellWorkspace {
     /// User-defined group name. Optional so generation-1 snapshots still decode.
     #[serde(default)]
     pub group: Option<String>,
+    // Defaulted so generation-1 snapshots without it still decode.
+    #[serde(default)]
+    pub skip_agent_resume: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1067,6 +1070,9 @@ pub struct ClientShellPane {
     pub foreground_cwd: Option<String>,
     pub focused: bool,
     pub right_click_passthrough: bool,
+    // Defaulted so generation-1 snapshots without it still decode.
+    #[serde(default)]
+    pub skip_agent_resume: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2821,6 +2827,7 @@ mod tests {
             agent_view_label: None,
             agent_order: Vec::new(),
             workspaces: vec![ClientShellWorkspace {
+                skip_agent_resume: false,
                 workspace_id: "w1".into(),
                 active_tab_id: "w1:t1".into(),
                 new_workspace_cwd: "/tmp".into(),
@@ -2846,6 +2853,7 @@ mod tests {
                 agent_status: crate::api::schema::AgentStatus::Idle,
             }],
             panes: vec![ClientShellPane {
+                skip_agent_resume: false,
                 pane_id: "w1:p1".into(),
                 workspace_id: "w1".into(),
                 tab_id: "w1:t1".into(),
