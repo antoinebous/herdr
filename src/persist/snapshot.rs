@@ -57,6 +57,8 @@ pub struct WorkspaceSnapshot {
     pub identity_cwd: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_space: Option<crate::workspace::WorktreeSpaceMembership>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     #[serde(default)]
     pub public_pane_numbers: HashMap<u32, usize>,
     #[serde(default)]
@@ -169,6 +171,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             custom_name: snap.custom_name,
             identity_cwd,
             worktree_space: None,
+            group: None,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
             public_tab_numbers: Vec::new(),
@@ -307,6 +310,7 @@ fn capture_workspace(
         custom_name: ws.custom_name.clone(),
         identity_cwd,
         worktree_space: ws.worktree_space.clone(),
+        group: ws.group.clone(),
         public_pane_numbers: ws
             .public_pane_numbers
             .iter()
@@ -728,6 +732,7 @@ mod tests {
                 custom_name: Some("pi-mono".to_string()),
                 identity_cwd: PathBuf::from("/home/can/Projects/herdr"),
                 worktree_space: None,
+                group: Some("data".to_string()),
                 public_pane_numbers: HashMap::from([(0, 1), (1, 2)]),
                 next_public_pane_number: 3,
                 public_tab_numbers: vec![1],
@@ -764,6 +769,7 @@ mod tests {
             restored.workspaces[0].custom_name.as_deref(),
             Some("pi-mono")
         );
+        assert_eq!(restored.workspaces[0].group.as_deref(), Some("data"));
         assert_eq!(restored.workspaces[0].tabs.len(), 1);
         assert_eq!(restored.workspaces[0].tabs[0].panes.len(), 2);
         assert_eq!(
@@ -783,6 +789,10 @@ mod tests {
         let snap = parse_snapshot(session_fixture("current-herdr")).unwrap();
 
         assert_eq!(snap.version, 3);
+        assert!(snap
+            .workspaces
+            .iter()
+            .all(|workspace| workspace.group.is_none()));
         assert_eq!(snap.workspaces.len(), 2);
         assert_eq!(snap.active, Some(0));
         assert_eq!(snap.selected, 0);
@@ -939,6 +949,7 @@ mod tests {
     #[test]
     fn capture_contract_tracks_worktree_space_membership() {
         let mut state = state_with_workspaces(&["main"]);
+        state.workspaces[0].group = Some("data".into());
         state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
             key: "repo-key".into(),
             label: "herdr".into(),
@@ -953,6 +964,7 @@ mod tests {
             snapshot.workspaces[0].worktree_space,
             state.workspaces[0].worktree_space
         );
+        assert_eq!(snapshot.workspaces[0].group.as_deref(), Some("data"));
     }
 
     #[test]
@@ -1429,6 +1441,7 @@ mod tests {
                 custom_name: Some("fallback test".to_string()),
                 identity_cwd: PathBuf::from("/tmp"),
                 worktree_space: None,
+                group: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),

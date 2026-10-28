@@ -95,6 +95,7 @@ pub(super) fn snapshot_with_completions(
                         is_linked_worktree: worktree.is_linked_worktree,
                     }),
                 agent_status: workspace.agent_status,
+                group: state.group.clone(),
             }
         })
         .collect();

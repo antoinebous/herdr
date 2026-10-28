@@ -993,6 +993,36 @@ impl ClientShellState {
                     label: Some(trimmed.to_owned()),
                 },
             )),
+            ClientRenameTarget::WorkspaceGroup { workspace_ids } => {
+                Some(crate::api::schema::Method::WorkspaceSetGroup(
+                    crate::api::schema::WorkspaceSetGroupParams {
+                        workspace_ids,
+                        group: (!trimmed.is_empty()).then(|| trimmed.to_owned()),
+                    },
+                ))
+            }
+            ClientRenameTarget::GroupName {
+                name,
+                workspace_ids,
+            } => (!trimmed.is_empty() && trimmed != name).then(|| {
+                // Keep the group folded under its new name.
+                let endpoint_id = self.active_endpoint_id.clone();
+                let old_key = super::sidebar::group_collapse_key(&name);
+                if self.group_is_collapsed(&endpoint_id, &old_key) {
+                    self.toggle_collapsed_group(&endpoint_id, old_key);
+                    let new_key = super::sidebar::group_collapse_key(trimmed);
+                    if !self.group_is_collapsed(&endpoint_id, &new_key) {
+                        self.toggle_collapsed_group(&endpoint_id, new_key);
+                    }
+                    self.persist_chrome_preferences(outcome);
+                }
+                crate::api::schema::Method::WorkspaceSetGroup(
+                    crate::api::schema::WorkspaceSetGroupParams {
+                        workspace_ids,
+                        group: Some(trimmed.to_owned()),
+                    },
+                )
+            }),
         };
         if let Some(method) = method {
             self.push_endpoint_method(method, outcome);

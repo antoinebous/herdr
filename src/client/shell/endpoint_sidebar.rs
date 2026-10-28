@@ -268,10 +268,7 @@ pub(super) fn render_expanded(
 
     enum Row {
         Endpoint(usize),
-        Workspace {
-            endpoint: usize,
-            entry: WorkspaceEntry,
-        },
+        Space { endpoint: usize, row: SidebarRow },
     }
     let mut rows = Vec::new();
     for (endpoint_index, endpoint) in state.endpoints.iter().enumerate() {
@@ -283,11 +280,11 @@ pub(super) fn render_expanded(
             let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
                 .unwrap_or(&empty_collapsed_groups);
             rows.extend(
-                super::sidebar::workspace_entries(snapshot, collapsed_groups)
+                super::sidebar::sidebar_rows(snapshot, collapsed_groups)
                     .into_iter()
-                    .map(|entry| Row::Workspace {
+                    .map(|row| Row::Space {
                         endpoint: endpoint_index,
-                        entry,
+                        row,
                     }),
             );
         }
@@ -304,8 +301,15 @@ pub(super) fn render_expanded(
     let row_heights = rows
         .iter()
         .map(|row| match row {
-            Row::Endpoint(_) => 1,
-            Row::Workspace { endpoint, entry } => {
+            Row::Endpoint(_)
+            | Row::Space {
+                row: SidebarRow::Group(_),
+                ..
+            } => 1,
+            Row::Space {
+                endpoint,
+                row: SidebarRow::Workspace(entry),
+            } => {
                 let endpoint = &state.endpoints[*endpoint];
                 let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
                     .unwrap_or(&empty_collapsed_groups);
@@ -339,12 +343,14 @@ pub(super) fn render_expanded(
         .enumerate()
         .map(|(index, row)| match (row, rows.get(index + 1)) {
             (
-                Row::Workspace { endpoint, .. },
-                Some(Row::Workspace {
+                Row::Space { endpoint, row },
+                Some(Row::Space {
                     endpoint: next_endpoint,
-                    entry,
+                    row: next,
                 }),
-            ) if endpoint == next_endpoint => u16::from(!entry.indented) * config.spaces.row_gap,
+            ) if endpoint == next_endpoint => {
+                super::sidebar::sidebar_row_gap(row, next, config.spaces.row_gap)
+            }
             _ => 0,
         })
         .collect::<Vec<_>>();
@@ -352,7 +358,10 @@ pub(super) fn render_expanded(
     let reveal_focus = !body.is_empty() && std::mem::take(state.reveal_focused_workspace);
     if reveal_navigation || reveal_focus {
         let selected_row = rows.iter().position(|row| match row {
-            Row::Workspace { endpoint, entry } => {
+            Row::Space {
+                endpoint,
+                row: SidebarRow::Workspace(entry),
+            } => {
                 let endpoint = &state.endpoints[*endpoint];
                 endpoint
                     .snapshot
@@ -372,7 +381,11 @@ pub(super) fn render_expanded(
                         }
                     })
             }
-            Row::Endpoint(_) => false,
+            Row::Endpoint(_)
+            | Row::Space {
+                row: SidebarRow::Group(_),
+                ..
+            } => false,
         });
         if let Some(selected_row) = selected_row {
             *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
@@ -432,7 +445,52 @@ pub(super) fn render_expanded(
                     .saturating_add(1)
                     .saturating_add(gaps.get(row_index).copied().unwrap_or(0));
             }
-            Row::Workspace { endpoint, entry } => {
+            Row::Space {
+                endpoint,
+                row: SidebarRow::Group(header),
+            } => {
+                if y >= body.bottom() {
+                    break;
+                }
+                let endpoint = &state.endpoints[*endpoint];
+                let Some(snapshot) = endpoint.snapshot.as_deref() else {
+                    continue;
+                };
+                let rect = Rect::new(body.x, y, content_width, 1);
+                super::sidebar::render_group_header(
+                    buffer,
+                    Rect::new(
+                        rect.x.saturating_add(2),
+                        rect.y,
+                        rect.width.saturating_sub(2),
+                        1,
+                    ),
+                    snapshot,
+                    header,
+                    config.status_indicators,
+                    palette,
+                );
+                if let Some(first) = header
+                    .members
+                    .iter()
+                    .min()
+                    .and_then(|member| snapshot.workspaces.get(*member))
+                {
+                    hits.workspace_groups.push(WorkspaceGroupHit {
+                        rect,
+                        endpoint_id: endpoint.endpoint_id.clone(),
+                        name: header.name.clone(),
+                        first_workspace_id: first.workspace_id.clone(),
+                    });
+                }
+                y = y
+                    .saturating_add(1)
+                    .saturating_add(gaps.get(row_index).copied().unwrap_or(0));
+            }
+            Row::Space {
+                endpoint,
+                row: SidebarRow::Workspace(entry),
+            } => {
                 let endpoint = &state.endpoints[*endpoint];
                 let Some(snapshot) = endpoint.snapshot.as_deref() else {
                     continue;

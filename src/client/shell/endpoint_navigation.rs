@@ -23,10 +23,11 @@ impl ClientShellState {
                         .find(|workspace| workspace.workspace_id == press.workspace_id)
                 })
                 .is_some_and(|workspace| {
-                    !workspace
-                        .worktree
-                        .as_ref()
-                        .is_some_and(|worktree| worktree.is_linked_worktree)
+                    press.group.is_some()
+                        || !workspace
+                            .worktree
+                            .as_ref()
+                            .is_some_and(|worktree| worktree.is_linked_worktree)
                 })
     }
 
@@ -35,6 +36,15 @@ impl ClientShellState {
         press: ClientWorkspacePress,
         outcome: &mut ClientShellInput,
     ) {
+        if let Some(group) = press.group {
+            self.toggle_collapsed_group(
+                &press.endpoint_id,
+                super::sidebar::group_collapse_key(&group),
+            );
+            outcome.repaint = true;
+            self.persist_chrome_preferences(outcome);
+            return;
+        }
         self.focus_or_activate(
             press.endpoint_id,
             ClientEndpointFocusTarget::Workspace(press.workspace_id),

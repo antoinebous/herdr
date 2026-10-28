@@ -161,6 +161,7 @@ mod tests {
             "workspace.rename",
             "workspace.move",
             "workspace.move_block",
+            "workspace.set_group",
             "workspace.report_metadata",
             "workspace.close",
             "worktree.create",

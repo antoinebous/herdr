@@ -60,6 +60,14 @@ pub struct WorkspaceMoveBlockParams {
     pub before_workspace_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkspaceSetGroupParams {
+    pub workspace_ids: Vec<String>,
+    /// Group name. Omitted, empty, or blank removes the workspaces from their group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+}
+
 cli_params! {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
     pub struct WorkspaceReportMetadataParams => WorkspaceMetadataProjection {
@@ -94,6 +102,8 @@ pub struct WorkspaceInfo {
     pub tokens: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorkspaceWorktreeInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

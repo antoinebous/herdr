@@ -1032,6 +1032,9 @@ pub struct ClientShellWorkspace {
     pub focused: bool,
     #[serde(deserialize_with = "deserialize_client_shell_agent_status")]
     pub agent_status: crate::api::schema::AgentStatus,
+    /// User-defined group name. Optional so generation-1 snapshots still decode.
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2830,6 +2833,7 @@ mod tests {
                 worktree: None,
                 focused: true,
                 agent_status: crate::api::schema::AgentStatus::Idle,
+                group: Some("data".into()),
             }],
             tabs: vec![ClientShellTab {
                 tab_id: "w1:t1".into(),
