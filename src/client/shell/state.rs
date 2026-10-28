@@ -85,6 +85,7 @@ pub(super) enum ClientMobileTarget {
 pub(super) struct ShellHitMap {
     pub(super) machines: Vec<MachineHit>,
     pub(super) workspaces: Vec<WorkspaceHit>,
+    pub(super) workspace_groups: Vec<WorkspaceGroupHit>,
     pub(super) workspace_body: Rect,
     pub(super) workspace_scrollbar: Rect,
     pub(super) workspace_scroll_metrics: Option<crate::pane::ScrollMetrics>,
@@ -175,6 +176,8 @@ pub(super) struct ClientPaneMouseGesture {
 pub(super) struct ClientWorkspacePress {
     pub(super) endpoint_id: ClientEndpointId,
     pub(super) workspace_id: String,
+    /// Set when the press started on a group header instead of a workspace row.
+    pub(super) group: Option<String>,
     pub(super) start_column: u16,
     pub(super) start_row: u16,
 }
@@ -237,6 +240,14 @@ pub(super) struct WorkspaceHit {
     pub(super) workspace_id: String,
     pub(super) indented: bool,
     pub(super) group_toggle: Option<(Rect, String)>,
+}
+
+pub(super) struct WorkspaceGroupHit {
+    pub(super) rect: Rect,
+    pub(super) endpoint_id: ClientEndpointId,
+    pub(super) name: String,
+    /// First member in snapshot order; dragging the header moves the whole group.
+    pub(super) first_workspace_id: String,
 }
 
 #[derive(Debug)]
@@ -314,6 +325,15 @@ pub(super) enum ClientRenameTarget {
     },
     Pane {
         pane_id: String,
+    },
+    /// Move workspaces into a group; an empty name removes them from their group.
+    WorkspaceGroup {
+        workspace_ids: Vec<String>,
+    },
+    /// Rename a group by moving all of its members to the new name.
+    GroupName {
+        name: String,
+        workspace_ids: Vec<String>,
     },
 }
 
@@ -516,6 +536,9 @@ pub(super) enum ClientContextMenuAction {
     OpenWorktree,
     RemoveWorktree,
     ToggleGroup,
+    MoveToGroup,
+    RemoveFromGroup,
+    Ungroup,
     NewTab,
     RenamePane,
     ClearPaneName,
@@ -535,6 +558,13 @@ pub(super) enum ClientContextMenuTarget {
         is_linked_worktree: bool,
         has_worktree_children: bool,
         close_group: bool,
+        collapsed: bool,
+        /// Current user group, when the server supports grouping.
+        group: Option<String>,
+        can_group: bool,
+    },
+    WorkspaceGroup {
+        name: String,
         collapsed: bool,
     },
     Tab {
@@ -990,6 +1020,20 @@ pub(super) struct WorkspaceEntry {
     pub(super) index: usize,
     pub(super) indented: bool,
     pub(super) last_child: bool,
+    /// Member of a user-defined group, drawn one level deeper.
+    pub(super) grouped: bool,
+}
+
+pub(super) struct WorkspaceGroupHeader {
+    pub(super) name: String,
+    /// Snapshot workspace indices in display order.
+    pub(super) members: Vec<usize>,
+    pub(super) collapsed: bool,
+}
+
+pub(super) enum SidebarRow {
+    Group(WorkspaceGroupHeader),
+    Workspace(WorkspaceEntry),
 }
 
 impl ClientShellState {
@@ -1209,9 +1253,19 @@ impl ClientShellState {
             return;
         }
         let target = self.snapshot.as_deref().and_then(|snapshot| {
-            self.navigation_workspace_entries(snapshot)
+            let empty_collapsed_groups = HashSet::new();
+            let collapsed_groups = if self.mobile_layout_active() {
+                &empty_collapsed_groups
+            } else {
+                self.collapsed_groups_for_endpoint(&self.active_endpoint_id)
+                    .unwrap_or(&empty_collapsed_groups)
+            };
+            render::sidebar_rows(snapshot, collapsed_groups)
                 .iter()
-                .position(|entry| snapshot.workspaces[entry.index].workspace_id == workspace_id)
+                .position(|row| {
+                    matches!(row, SidebarRow::Workspace(entry)
+                        if snapshot.workspaces[entry.index].workspace_id == workspace_id)
+                })
         });
         if let Some(target) = target {
             self.workspace_scroll = target.min(self.hits.workspace_max_scroll);

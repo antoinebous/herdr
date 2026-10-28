@@ -515,6 +515,9 @@ impl ClientShellState {
             || self.hits.workspaces.iter().any(|hit| {
                 hit.endpoint_id != self.active_endpoint_id && super::contains(hit.rect, point)
             })
+            || self.hits.workspace_groups.iter().any(|hit| {
+                hit.endpoint_id != self.active_endpoint_id && super::contains(hit.rect, point)
+            })
         {
             return None;
         }
@@ -538,43 +541,91 @@ impl ClientShellState {
                 })
             })
             .map(|hit| (Some(hit.workspace_id.clone()), hit.rect.y.saturating_sub(1)))
+            .chain(
+                self.hits
+                    .workspace_groups
+                    .iter()
+                    .filter(|hit| hit.endpoint_id == self.active_endpoint_id)
+                    .map(|hit| {
+                        (
+                            Some(hit.first_workspace_id.clone()),
+                            hit.rect.y.saturating_sub(1),
+                        )
+                    }),
+            )
             .collect::<Vec<_>>();
+        slots.sort_by_key(|(_, row)| *row);
         let empty_collapsed_groups = HashSet::new();
         let collapsed_groups = self
             .collapsed_groups_for_endpoint(&self.active_endpoint_id)
             .unwrap_or(&empty_collapsed_groups);
-        let entries = render::workspace_entries(snapshot, collapsed_groups);
-        let last_hit = self
+        let rows = render::sidebar_rows(snapshot, collapsed_groups);
+        let last_workspace = self
             .hits
             .workspaces
             .iter()
             .rev()
-            .find(|hit| hit.endpoint_id == self.active_endpoint_id)?;
-        let last_position = entries.iter().position(|entry| {
-            snapshot
-                .workspaces
-                .get(entry.index)
-                .is_some_and(|workspace| workspace.workspace_id == last_hit.workspace_id)
-        })?;
-        let next = entries.get(last_position + 1);
-        if !next.is_some_and(|entry| {
-            entry.indented
-                || last_hit.group_toggle.as_ref().is_some_and(|(_, key)| {
-                    snapshot.workspaces[entry.index]
-                        .worktree
-                        .as_ref()
-                        .is_some_and(|worktree| worktree.key == *key)
-                })
-        }) {
-            let before = next.and_then(|entry| {
-                snapshot
+            .find(|hit| hit.endpoint_id == self.active_endpoint_id);
+        let last_group = self
+            .hits
+            .workspace_groups
+            .iter()
+            .rev()
+            .find(|hit| hit.endpoint_id == self.active_endpoint_id);
+        let workspace_is_last = last_workspace.is_some_and(|workspace| {
+            last_group.is_none_or(|group| group.rect.y < workspace.rect.y)
+        });
+        let (last_position, last_bottom, last_toggle) = if workspace_is_last {
+            let workspace = last_workspace?;
+            {
+                let position = rows.iter().position(|row| {
+                    matches!(row, SidebarRow::Workspace(entry)
+                    if snapshot.workspaces.get(entry.index).is_some_and(|candidate| {
+                        candidate.workspace_id == workspace.workspace_id
+                    }))
+                })?;
+                (
+                    position,
+                    workspace.rect.bottom(),
+                    workspace.group_toggle.as_ref(),
+                )
+            }
+        } else {
+            let group = last_group?;
+            let position = rows.iter().position(
+                |row| matches!(row, SidebarRow::Group(header) if header.name == group.name),
+            )?;
+            (position, group.rect.bottom(), None)
+        };
+        let next = rows.get(last_position + 1);
+        let next_is_child = match next {
+            Some(SidebarRow::Workspace(entry)) => {
+                entry.indented
+                    || entry.grouped
+                    || last_toggle.is_some_and(|(_, key)| {
+                        snapshot.workspaces[entry.index]
+                            .worktree
+                            .as_ref()
+                            .is_some_and(|worktree| worktree.key == *key)
+                    })
+            }
+            _ => false,
+        };
+        if !next_is_child {
+            let before = next.and_then(|row| match row {
+                SidebarRow::Workspace(entry) => snapshot
                     .workspaces
                     .get(entry.index)
-                    .map(|workspace| workspace.workspace_id.clone())
+                    .map(|workspace| workspace.workspace_id.clone()),
+                SidebarRow::Group(header) => header
+                    .members
+                    .iter()
+                    .min()
+                    .and_then(|member| snapshot.workspaces.get(*member))
+                    .map(|workspace| workspace.workspace_id.clone()),
             });
-            let row = last_hit.rect.bottom();
-            if row < self.hits.new_workspace.y {
-                slots.push((before, row));
+            if last_bottom < self.hits.new_workspace.y {
+                slots.push((before, last_bottom));
             }
         }
         slots
@@ -594,6 +645,43 @@ impl ClientShellState {
             .workspaces
             .iter()
             .find(|workspace| workspace.workspace_id == source_workspace_id)?;
+        // Grouped workspaces only drag through their header, which moves the whole group.
+        if let Some(group) = source.group.as_deref() {
+            let workspace_ids = snapshot
+                .workspaces
+                .iter()
+                .filter(|workspace| workspace.group.as_deref() == Some(group))
+                .map(|workspace| workspace.workspace_id.clone())
+                .collect::<Vec<_>>();
+            if before_workspace_id.is_some_and(|target| workspace_ids.iter().any(|id| id == target))
+            {
+                return None;
+            }
+            let mut desired = snapshot
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.workspace_id.as_str())
+                .filter(|id| !workspace_ids.iter().any(|member| member == id))
+                .collect::<Vec<_>>();
+            let insert = before_workspace_id
+                .and_then(|target| desired.iter().position(|id| *id == target))
+                .unwrap_or(desired.len());
+            desired.splice(insert..insert, workspace_ids.iter().map(String::as_str));
+            if snapshot
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.workspace_id.as_str())
+                .eq(desired)
+            {
+                return None;
+            }
+            return Some(crate::api::schema::Method::WorkspaceMoveBlock(
+                crate::api::schema::WorkspaceMoveBlockParams {
+                    workspace_ids,
+                    before_workspace_id: before_workspace_id.map(str::to_owned),
+                },
+            ));
+        }
         if source
             .worktree
             .as_ref()
@@ -1835,6 +1923,20 @@ impl ClientShellState {
                 if !self.config.mouse_capture {
                     return;
                 }
+                let group = (!self.sidebar_collapsed)
+                    .then(|| {
+                        self.hits.workspace_groups.iter().find(|hit| {
+                            hit.endpoint_id == self.active_endpoint_id
+                                && super::contains(hit.rect, point)
+                        })
+                    })
+                    .flatten()
+                    .map(|hit| hit.name.clone());
+                if let Some(group) = group {
+                    self.open_group_context_menu(group, mouse.column, mouse.row);
+                    outcome.repaint = true;
+                    return;
+                }
                 let workspace_id = (!self.sidebar_collapsed)
                     .then(|| self.active_endpoint_workspace_at(point))
                     .flatten();
@@ -2098,17 +2200,31 @@ impl ClientShellState {
                     self.persist_chrome_preferences(outcome);
                     return;
                 }
-                let workspace_press = self
+                let group_press = self
                     .hits
-                    .workspaces
+                    .workspace_groups
                     .iter()
                     .find(|hit| super::contains(hit.rect, point))
                     .map(|hit| ClientWorkspacePress {
                         endpoint_id: hit.endpoint_id.clone(),
-                        workspace_id: hit.workspace_id.clone(),
+                        workspace_id: hit.first_workspace_id.clone(),
+                        group: Some(hit.name.clone()),
                         start_column: mouse.column,
                         start_row: mouse.row,
                     });
+                let workspace_press = group_press.or_else(|| {
+                    self.hits
+                        .workspaces
+                        .iter()
+                        .find(|hit| super::contains(hit.rect, point))
+                        .map(|hit| ClientWorkspacePress {
+                            endpoint_id: hit.endpoint_id.clone(),
+                            workspace_id: hit.workspace_id.clone(),
+                            group: None,
+                            start_column: mouse.column,
+                            start_row: mouse.row,
+                        })
+                });
                 if let Some(workspace_press) = workspace_press {
                     self.workspace_press = Some(workspace_press);
                     return;

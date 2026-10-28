@@ -74,6 +74,24 @@ fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
 }
 
 #[test]
+fn machine_sidebar_renders_group_headers_per_endpoint() {
+    let (mut state, remote_id) = state_with_remote();
+    let mut local = snapshot();
+    local.workspaces[0].group = Some("data".into());
+    state.set_snapshot(Box::new(local));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 20).expect("machines sidebar");
+
+    assert!(frame_rows(&frame)
+        .iter()
+        .any(|row| row.contains("▾ data · 1")));
+    assert_eq!(state.hits.workspace_groups.len(), 1);
+    assert!(state.hits.workspace_groups[0].endpoint_id.is_local());
+    assert_ne!(state.hits.workspace_groups[0].endpoint_id, remote_id);
+}
+
+#[test]
 fn workspace_navigation_waits_for_the_target_presentation_fence() {
     use crate::client::endpoint::{EndpointNegotiation, EndpointRegistry};
     use crate::client::endpoint_commands::EndpointCommands;

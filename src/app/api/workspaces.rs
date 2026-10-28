@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, WorkspaceCloseParams,
     WorkspaceCreateParams, WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams,
-    WorkspaceReportMetadataParams, WorkspaceTarget,
+    WorkspaceReportMetadataParams, WorkspaceSetGroupParams, WorkspaceTarget,
 };
 use crate::app::App;
 
@@ -229,6 +229,96 @@ impl App {
                 event: EventKind::WorkspaceReordered,
                 data: EventData::WorkspaceReordered {
                     workspace_ids,
+                    before_workspace_id,
+                    workspaces: workspaces.clone(),
+                },
+            });
+        }
+
+        encode_success(id, ResponseResult::WorkspaceList { workspaces })
+    }
+
+    pub(super) fn handle_workspace_set_group(
+        &mut self,
+        id: String,
+        params: WorkspaceSetGroupParams,
+    ) -> String {
+        const MAX_GROUP_CHARS: usize = 64;
+
+        if params.workspace_ids.is_empty() {
+            return encode_error(
+                id,
+                "workspace_set_group_failed",
+                "workspace_ids must not be empty",
+            );
+        }
+        let group = params
+            .group
+            .as_deref()
+            .map(str::trim)
+            .filter(|group| !group.is_empty());
+        if group.is_some_and(|group| {
+            group.chars().count() > MAX_GROUP_CHARS || group.chars().any(char::is_control)
+        }) {
+            return encode_error(
+                id,
+                "workspace_set_group_failed",
+                format!("group must be at most {MAX_GROUP_CHARS} printable characters"),
+            );
+        }
+
+        let mut workspace_ids = Vec::with_capacity(params.workspace_ids.len());
+        for requested_id in &params.workspace_ids {
+            let Some(workspace) = self
+                .parse_workspace_id(requested_id)
+                .and_then(|index| self.state.workspaces.get(index))
+            else {
+                return workspace_not_found(id, requested_id);
+            };
+            if workspace_ids.contains(&workspace.id) {
+                return encode_error(
+                    id,
+                    "workspace_set_group_failed",
+                    format!("workspace {requested_id} appears more than once"),
+                );
+            }
+            workspace_ids.push(workspace.id.clone());
+        }
+
+        let (changed, moved) = self.state.set_workspace_group(&workspace_ids, group);
+        for changed_id in &changed {
+            if let Some(index) = self
+                .state
+                .workspaces
+                .iter()
+                .position(|workspace| workspace.id == *changed_id)
+            {
+                self.emit_workspace_updated(index);
+            }
+        }
+        let workspaces = self.workspace_list_info();
+        if moved {
+            // The moved block is contiguous after the reorder.
+            let positions = self
+                .state
+                .workspaces
+                .iter()
+                .enumerate()
+                .filter(|(_, workspace)| workspace_ids.contains(&workspace.id))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let before_workspace_id = positions
+                .last()
+                .map(|last| last + 1)
+                .filter(|next| *next < self.state.workspaces.len())
+                .map(|next| self.public_workspace_id(next));
+            self.emit_event(EventEnvelope {
+                event: EventKind::WorkspaceReordered,
+                data: EventData::WorkspaceReordered {
+                    workspace_ids: positions
+                        .into_iter()
+                        .map(|index| self.public_workspace_id(index))
+                        .collect(),
                     before_workspace_id,
                     workspaces: workspaces.clone(),
                 },
@@ -1120,6 +1210,108 @@ mod tests {
                 && before_workspace_id.as_deref() == Some(tail_id.as_str())
                 && workspaces[1].workspace_id == parent_id
         ));
+    }
+
+    fn app_with_named_workspaces(names: &[&str]) -> (App, crate::api::EventHub) {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            event_hub.clone(),
+        );
+        app.state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
+        (app, event_hub)
+    }
+
+    fn set_group(app: &mut App, workspace_ids: &[String], group: Option<&str>) -> String {
+        app.handle_workspace_set_group(
+            "req".into(),
+            WorkspaceSetGroupParams {
+                workspace_ids: workspace_ids.to_vec(),
+                group: group.map(str::to_owned),
+            },
+        )
+    }
+
+    #[test]
+    fn api_workspace_set_group_trims_reports_and_clears_blank_names() {
+        let (mut app, event_hub) = app_with_named_workspaces(&["a", "b"]);
+        let a = app.public_workspace_id(0);
+
+        let response = set_group(&mut app, std::slice::from_ref(&a), Some("  data  "));
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::WorkspaceList { workspaces } = success.result else {
+            panic!("expected workspace list");
+        };
+        assert_eq!(workspaces[0].group.as_deref(), Some("data"));
+        assert_eq!(workspaces[1].group, None);
+        let events = event_hub.events_after(0);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0].1.data,
+            EventData::WorkspaceUpdated { workspace }
+                if workspace.workspace_id == a && workspace.group.as_deref() == Some("data")
+        ));
+
+        set_group(&mut app, std::slice::from_ref(&a), Some("data"));
+        assert_eq!(
+            event_hub.events_after(0).len(),
+            1,
+            "unchanged group is silent"
+        );
+
+        set_group(&mut app, std::slice::from_ref(&a), Some("   "));
+        assert_eq!(app.state.workspaces[0].group, None);
+    }
+
+    #[test]
+    fn api_workspace_set_group_join_emits_reorder_after_last_member() {
+        let (mut app, event_hub) = app_with_named_workspaces(&["m1", "mid", "late"]);
+        let ids = (0..3)
+            .map(|index| app.public_workspace_id(index))
+            .collect::<Vec<_>>();
+        set_group(&mut app, &ids[0..1], Some("data"));
+
+        set_group(&mut app, &ids[2..3], Some("data"));
+
+        assert_eq!(
+            app.state
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.display_name())
+                .collect::<Vec<_>>(),
+            ["m1", "late", "mid"]
+        );
+        assert!(event_hub.events_after(0).iter().any(|(_, event)| matches!(
+            &event.data,
+            EventData::WorkspaceReordered {
+                workspace_ids,
+                before_workspace_id,
+                ..
+            } if workspace_ids == &[ids[2].clone()]
+                && before_workspace_id.as_deref() == Some(ids[1].as_str())
+        )));
+    }
+
+    #[test]
+    fn api_workspace_set_group_rejects_invalid_requests_without_mutation() {
+        let (mut app, event_hub) = app_with_named_workspaces(&["a"]);
+        let a = app.public_workspace_id(0);
+
+        for response in [
+            set_group(&mut app, &[], Some("data")),
+            set_group(&mut app, &["missing".into()], Some("data")),
+            set_group(&mut app, &[a.clone(), a.clone()], Some("data")),
+            set_group(&mut app, std::slice::from_ref(&a), Some(&"x".repeat(65))),
+            set_group(&mut app, std::slice::from_ref(&a), Some("da\nta")),
+        ] {
+            assert!(serde_json::from_str::<ErrorResponse>(&response).is_ok());
+        }
+        assert_eq!(app.state.workspaces[0].group, None);
+        assert!(event_hub.events_after(0).is_empty());
     }
 
     #[test]

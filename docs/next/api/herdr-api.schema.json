@@ -1085,6 +1085,12 @@
             "focused": {
               "type": "boolean"
             },
+            "group": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "label": {
               "type": "string"
             },
@@ -4512,6 +4518,27 @@
           ],
           "type": "object"
         },
+        "WorkspaceSetGroupParams": {
+          "properties": {
+            "group": {
+              "description": "Group name. Omitted, empty, or blank removes the workspaces from their group.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "workspace_ids"
+          ],
+          "type": "object"
+        },
         "WorkspaceTarget": {
           "properties": {
             "workspace_id": {
@@ -6305,6 +6332,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PluginPaneCloseParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.set_group",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceSetGroupParams"
             }
           },
           "required": [
@@ -10583,6 +10626,12 @@
             },
             "focused": {
               "type": "boolean"
+            },
+            "group": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "label": {
               "type": "string"

@@ -504,6 +504,51 @@ impl AppState {
         true
     }
 
+    /// Puts workspaces in `group`, or removes them from their group with `None`.
+    /// Joining a group that has other members moves them after its last member.
+    /// Returns the ids whose group changed and whether the order changed.
+    pub fn set_workspace_group(
+        &mut self,
+        workspace_ids: &[String],
+        group: Option<&str>,
+    ) -> (Vec<String>, bool) {
+        let ids = workspace_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::HashSet<_>>();
+        let ordered_ids = self
+            .workspaces
+            .iter()
+            .filter(|workspace| ids.contains(workspace.id.as_str()))
+            .map(|workspace| workspace.id.clone())
+            .collect::<Vec<_>>();
+        let join_before = group.and_then(|group| {
+            let last_member = self.workspaces.iter().rposition(|workspace| {
+                workspace.group.as_deref() == Some(group) && !ids.contains(workspace.id.as_str())
+            })?;
+            Some(
+                self.workspaces[last_member + 1..]
+                    .iter()
+                    .find(|workspace| !ids.contains(workspace.id.as_str()))
+                    .map(|workspace| workspace.id.clone()),
+            )
+        });
+
+        let mut changed = Vec::new();
+        for workspace in &mut self.workspaces {
+            if ids.contains(workspace.id.as_str()) && workspace.group.as_deref() != group {
+                workspace.group = group.map(str::to_owned);
+                changed.push(workspace.id.clone());
+            }
+        }
+        if !changed.is_empty() {
+            self.mark_session_dirty();
+        }
+        let moved = join_before
+            .is_some_and(|before| self.move_workspace_block(&ordered_ids, before.as_deref()));
+        (changed, moved)
+    }
+
     pub fn move_workspace_block(
         &mut self,
         workspace_ids: &[String],
@@ -2843,6 +2888,108 @@ mod tests {
         );
         assert_eq!(state.workspaces[state.active.unwrap()].id, child_one_id);
         assert_eq!(state.workspaces[state.selected].id, tail_id);
+    }
+
+    fn names_and_groups(state: &AppState) -> Vec<(String, Option<String>)> {
+        state
+            .workspaces
+            .iter()
+            .map(|workspace| (workspace.display_name(), workspace.group.clone()))
+            .collect()
+    }
+
+    fn group_entry(name: &str, group: Option<&str>) -> (String, Option<String>) {
+        (name.to_owned(), group.map(str::to_owned))
+    }
+
+    #[test]
+    fn set_workspace_group_creates_and_leaves_groups_in_place() {
+        let mut state = app_with_workspaces(&["a", "b", "c"]);
+        let b = state.workspaces[1].id.clone();
+
+        assert_eq!(
+            state.set_workspace_group(std::slice::from_ref(&b), Some("data")),
+            (vec![b.clone()], false)
+        );
+        assert_eq!(
+            names_and_groups(&state),
+            [
+                group_entry("a", None),
+                group_entry("b", Some("data")),
+                group_entry("c", None),
+            ]
+        );
+        assert_eq!(
+            state.set_workspace_group(std::slice::from_ref(&b), Some("data")),
+            (Vec::new(), false)
+        );
+        assert_eq!(
+            state.set_workspace_group(std::slice::from_ref(&b), None),
+            (vec![b], false)
+        );
+        assert!(names_and_groups(&state)
+            .iter()
+            .all(|(_, group)| group.is_none()));
+    }
+
+    #[test]
+    fn set_workspace_group_joins_after_the_last_existing_member() {
+        let mut state = app_with_workspaces(&["top", "m1", "m2", "mid", "tail"]);
+        let ids = state
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id.clone())
+            .collect::<Vec<_>>();
+        state.set_workspace_group(&ids[1..3], Some("data"));
+        let active_id = ids[0].clone();
+
+        let (changed, moved) = state.set_workspace_group(&[ids[4].clone()], Some("data"));
+        assert_eq!(changed, [ids[4].clone()]);
+        assert!(moved);
+        let (changed, moved) = state.set_workspace_group(&[ids[0].clone()], Some("data"));
+        assert_eq!(changed, [ids[0].clone()]);
+        assert!(moved);
+
+        assert_eq!(
+            names_and_groups(&state),
+            [
+                group_entry("m1", Some("data")),
+                group_entry("m2", Some("data")),
+                group_entry("tail", Some("data")),
+                group_entry("top", Some("data")),
+                group_entry("mid", None),
+            ]
+        );
+        assert_eq!(state.workspaces[state.active.unwrap()].id, active_id);
+    }
+
+    #[test]
+    fn set_workspace_group_renames_in_place_and_merges_into_existing_groups() {
+        let mut state = app_with_workspaces(&["d1", "x", "o1", "o2", "y"]);
+        let ids = state
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id.clone())
+            .collect::<Vec<_>>();
+        state.set_workspace_group(&ids[0..1], Some("data"));
+        state.set_workspace_group(&ids[2..4], Some("ops"));
+
+        let (changed, moved) = state.set_workspace_group(&ids[2..4], Some("infra"));
+        assert_eq!(changed.len(), 2);
+        assert!(!moved);
+
+        let (_, moved) = state.set_workspace_group(&ids[2..4], Some("data"));
+        assert!(moved);
+        assert_eq!(
+            names_and_groups(&state),
+            [
+                group_entry("d1", Some("data")),
+                group_entry("o1", Some("data")),
+                group_entry("o2", Some("data")),
+                group_entry("x", None),
+                group_entry("y", None),
+            ]
+        );
     }
 
     #[test]

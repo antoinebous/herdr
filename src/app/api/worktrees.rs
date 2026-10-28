@@ -124,6 +124,9 @@ impl App {
             canonical_path != crate::worktree::canonical_or_original(&source.source_repo_root),
             !created_workspace,
         );
+        if created_workspace {
+            self.inherit_source_group(&source, ws_idx);
+        }
         if let Some(label) = params.label {
             let workspace_id = self.public_workspace_id(ws_idx);
             if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
@@ -349,6 +352,20 @@ impl App {
                     .git_space()
                     .is_some_and(|space| space.key == repo_key && !space.is_linked_worktree)
         })
+    }
+
+    /// A new worktree workspace joins the group of its repo parent. The order is
+    /// left alone because callers keep using `ws_idx`; the sidebar gathers members.
+    fn inherit_source_group(&mut self, source: &WorktreeSource, ws_idx: usize) {
+        let group = source
+            .workspace_idx
+            .filter(|parent| *parent != ws_idx)
+            .and_then(|parent| self.state.workspaces.get(parent))
+            .and_then(|parent| parent.group.clone());
+        if let (Some(group), Some(workspace)) = (group, self.state.workspaces.get_mut(ws_idx)) {
+            workspace.group = Some(group);
+            self.state.mark_session_dirty();
+        }
     }
 
     fn mark_worktree_membership(
@@ -748,6 +765,7 @@ mod tests {
         let mut app = test_app_with_event_hub(event_hub.clone());
         let mut parent = Workspace::test_new("main");
         parent.identity_cwd = repo.clone();
+        parent.group = Some("data".into());
         app.state.workspaces = vec![parent];
         app.state.ensure_test_terminals();
         app.state.active = Some(0);
@@ -796,6 +814,8 @@ mod tests {
                 .is_linked_worktree
         );
         assert!(workspace.worktree.unwrap().is_linked_worktree);
+        assert_eq!(workspace.group.as_deref(), Some("data"));
+        assert_eq!(app.state.workspaces[1].group.as_deref(), Some("data"));
         let events = event_hub.events_after(0);
         assert!(events.iter().any(|(_, event)| {
             matches!(
