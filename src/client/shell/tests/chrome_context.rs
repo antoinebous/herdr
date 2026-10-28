@@ -552,6 +552,22 @@ fn agent_resume_toggles_require_the_advertised_method() {
 }
 
 #[test]
+fn pane_agent_resume_toggle_is_hidden_when_its_workspace_opted_out() {
+    let mut projected = snapshot();
+    projected.workspaces[0].skip_agent_resume = true;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+
+    state.open_pane_context_menu("pane_1".into(), 0, 0);
+    assert_eq!(agent_resume_item(&state), None);
+    state.open_workspace_context_menu("ws_1".into(), 0, 0);
+    assert_eq!(
+        agent_resume_item(&state).map(|(_, label)| label).as_deref(),
+        Some("Resume agents on restart")
+    );
+}
+
+#[test]
 fn pane_agent_resume_toggle_reflects_and_flips_server_state() {
     let mut projected = snapshot();
     projected.panes[0].skip_agent_resume = true;

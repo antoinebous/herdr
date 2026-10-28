@@ -176,10 +176,7 @@ impl App {
     ) -> String {
         let mut indices = Vec::with_capacity(params.workspace_ids.len());
         for requested_id in &params.workspace_ids {
-            let Some(index) = self
-                .parse_workspace_id(requested_id)
-                .filter(|index| *index < self.state.workspaces.len())
-            else {
+            let Some(index) = self.parse_workspace_id(requested_id) else {
                 return workspace_not_found(id, requested_id);
             };
             indices.push(index);

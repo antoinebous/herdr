@@ -348,6 +348,10 @@ impl ClientShellState {
             .focused_pane_id
             .clone()
             .filter(|focused| focused != &pane_id);
+        // A workspace opt-out overrides the pane flag, so the pane toggle would have no effect.
+        let workspace_skips_agent_resume = snapshot.workspaces.iter().any(|workspace| {
+            workspace.workspace_id == pane.workspace_id && workspace.skip_agent_resume
+        });
         let skip_agent_resume = self
             .supports_endpoint_method(&crate::api::schema::Method::PaneSetAgentResume(
                 crate::api::schema::PaneSetAgentResumeParams {
@@ -355,7 +359,8 @@ impl ClientShellState {
                     enabled: true,
                 },
             ))
-            .then_some(pane.skip_agent_resume);
+            .then_some(pane.skip_agent_resume)
+            .filter(|_| !workspace_skips_agent_resume);
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Pane {
                 pane_id,
