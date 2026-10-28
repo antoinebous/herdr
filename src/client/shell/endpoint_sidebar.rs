@@ -559,7 +559,7 @@ pub(super) fn render_expanded(
                     rect,
                     endpoint_id: endpoint.endpoint_id.clone(),
                     workspace_id: workspace.workspace_id.clone(),
-                    indented: entry.indented || entry.grouped,
+                    indented: entry.indented,
                     group_toggle,
                 });
                 y = y

@@ -382,7 +382,7 @@ pub(crate) fn render_sidebar(
             rect,
             endpoint_id: ClientEndpointId::Local,
             workspace_id: workspace.workspace_id.clone(),
-            indented: entry.indented || entry.grouped,
+            indented: entry.indented,
             group_toggle,
         });
         y = y.saturating_add(row_height + gap);
@@ -394,18 +394,33 @@ pub(crate) fn render_sidebar(
         super::scroll::render_list_scrollbar(buffer, track, metrics, palette);
     }
 
-    if let Some(row) = state.workspace_drop_indicator_row.filter(|row| {
-        *row >= workspace_area.y.saturating_add(1)
-            && *row < workspace_area.bottom().saturating_sub(1)
-    }) {
-        put_text(
-            buffer,
-            body.x,
-            row,
-            body.width,
-            &"─".repeat(body.width as usize),
-            Style::default().fg(palette.accent),
-        );
+    match state.workspace_drop_target {
+        Some(target) if target.onto_header => {
+            if let Some(hit) = hits
+                .workspace_groups
+                .iter()
+                .find(|hit| hit.rect.y == target.row)
+            {
+                buffer.set_style(hit.rect, Style::default().bg(palette.selection_bg));
+            }
+        }
+        Some(target)
+            if target.row >= workspace_area.y.saturating_add(1)
+                && target.row < workspace_area.bottom().saturating_sub(1) =>
+        {
+            // Lines inside a group are indented like its members.
+            let indent = if target.group.is_some() { 2 } else { 0 };
+            let width = body.width.saturating_sub(indent);
+            put_text(
+                buffer,
+                body.x.saturating_add(indent),
+                target.row,
+                width,
+                &"─".repeat(width as usize),
+                Style::default().fg(palette.accent),
+            );
+        }
+        _ => {}
     }
 
     let footer_y = workspace_area.bottom().saturating_sub(1);

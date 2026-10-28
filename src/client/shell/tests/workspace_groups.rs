@@ -294,75 +294,197 @@ fn next_workspace_skips_members_of_a_collapsed_group() {
     ));
 }
 
-#[test]
-fn dragging_a_group_header_moves_the_whole_group_and_members_stay_put() {
-    let mut state = grouped_state(grouped_snapshot(&[None, Some("data"), Some("data"), None]));
-    let member = state
+fn row_rect(state: &ClientShellState, workspace_id: &str) -> Rect {
+    state
         .hits
         .workspaces
         .iter()
-        .find(|hit| hit.workspace_id == "ws_2")
-        .expect("member row")
-        .rect;
+        .find(|hit| hit.workspace_id == workspace_id)
+        .expect("workspace row")
+        .rect
+}
+
+/// Drags from one sidebar cell to another and returns the requested methods.
+fn drag(
+    state: &mut ClientShellState,
+    from: (u16, u16),
+    to: (u16, u16),
+) -> Vec<crate::api::schema::Method> {
+    mouse(
+        state,
+        MouseEventKind::Down(MouseButton::Left),
+        from.0,
+        from.1,
+    );
+    mouse(state, MouseEventKind::Drag(MouseButton::Left), to.0, to.1);
+    mouse(state, MouseEventKind::Up(MouseButton::Left), to.0, to.1)
+        .actions
+        .into_iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(request.method),
+            _ => None,
+        })
+        .collect()
+}
+
+fn set_group(workspace_ids: &[&str], group: Option<&str>) -> crate::api::schema::Method {
+    crate::api::schema::Method::WorkspaceSetGroup(crate::api::schema::WorkspaceSetGroupParams {
+        workspace_ids: ids(workspace_ids),
+        group: group.map(str::to_owned),
+    })
+}
+
+fn move_block(workspace_ids: &[&str], before: Option<&str>) -> crate::api::schema::Method {
+    crate::api::schema::Method::WorkspaceMoveBlock(crate::api::schema::WorkspaceMoveBlockParams {
+        workspace_ids: ids(workspace_ids),
+        before_workspace_id: before.map(str::to_owned),
+    })
+}
+
+#[test]
+fn dragging_a_group_header_moves_the_whole_group() {
+    let mut state = grouped_state(grouped_snapshot(&[None, Some("data"), Some("data"), None]));
+    let header = state.hits.workspace_groups[0].rect;
+    let last = row_rect(&state, "ws_4");
+
+    let methods = drag(
+        &mut state,
+        (header.x + 2, header.y),
+        (header.x + 2, last.bottom()),
+    );
+
+    assert_eq!(methods, [move_block(&["ws_2", "ws_3"], None)]);
+}
+
+#[test]
+fn dropping_a_workspace_on_a_header_appends_it_to_the_group() {
+    let mut state = grouped_state(grouped_snapshot(&[None, Some("data"), Some("data"), None]));
+    let source = row_rect(&state, "ws_4");
+    let header = state.hits.workspace_groups[0].rect;
+
     mouse(
         &mut state,
         MouseEventKind::Down(MouseButton::Left),
-        member.x + 2,
-        member.y,
+        source.x + 2,
+        source.y,
     );
     mouse(
         &mut state,
         MouseEventKind::Drag(MouseButton::Left),
-        member.x + 2,
-        member.y + 3,
-    );
-    assert!(
-        state.chrome_drag.is_none(),
-        "group members drag only through the header"
-    );
-    mouse(
-        &mut state,
-        MouseEventKind::Up(MouseButton::Left),
-        member.x + 2,
-        member.y + 3,
-    );
-
-    let header = state.hits.workspace_groups[0].rect;
-    let last = state
-        .hits
-        .workspaces
-        .iter()
-        .find(|hit| hit.workspace_id == "ws_4")
-        .expect("last row")
-        .rect;
-    mouse(
-        &mut state,
-        MouseEventKind::Down(MouseButton::Left),
         header.x + 2,
         header.y,
     );
-    mouse(
-        &mut state,
-        MouseEventKind::Drag(MouseButton::Left),
-        header.x + 2,
-        last.bottom(),
+    let frame = state.compose(106, 40).expect("header drop highlight");
+    let highlighted = usize::from(header.y) * usize::from(frame.width) + usize::from(header.x + 5);
+    assert_eq!(
+        frame.cells[highlighted].bg,
+        crate::protocol::color_to_u32(state.config.palette.selection_bg)
     );
     let drop = mouse(
         &mut state,
         MouseEventKind::Up(MouseButton::Left),
         header.x + 2,
-        last.bottom(),
+        header.y,
     );
 
     assert!(matches!(
         &drop.actions[..],
         [ClientShellAction::Endpoint { request, .. }]
-            if matches!(
-                &request.method,
-                crate::api::schema::Method::WorkspaceMoveBlock(params)
-                    if params.workspace_ids == ids(&["ws_2", "ws_3"])
-                        && params.before_workspace_id.is_none()
-            )
+            if request.method == set_group(&["ws_4"], Some("data"))
+    ));
+}
+
+#[test]
+fn dropping_between_members_joins_the_group_at_that_position() {
+    let mut state = grouped_state(grouped_snapshot(&[None, Some("data"), Some("data"), None]));
+    let source = row_rect(&state, "ws_1");
+    let second_member = row_rect(&state, "ws_3");
+
+    let methods = drag(
+        &mut state,
+        (source.x + 2, source.y),
+        (second_member.x + 4, second_member.y - 1),
+    );
+
+    assert_eq!(
+        methods,
+        [
+            set_group(&["ws_1"], Some("data")),
+            move_block(&["ws_1"], Some("ws_3")),
+        ]
+    );
+}
+
+#[test]
+fn dragging_a_member_out_of_its_group_or_within_it() {
+    let mut state = grouped_state(grouped_snapshot(&[None, Some("data"), Some("data"), None]));
+    let first_member = row_rect(&state, "ws_2");
+    let second_member = row_rect(&state, "ws_3");
+    let last = row_rect(&state, "ws_4");
+
+    let methods = drag(
+        &mut state,
+        (first_member.x + 4, first_member.y),
+        (last.x + 2, last.bottom()),
+    );
+    assert_eq!(
+        methods,
+        [set_group(&["ws_2"], None), move_block(&["ws_2"], None)]
+    );
+
+    let methods = drag(
+        &mut state,
+        (second_member.x + 4, second_member.y),
+        (first_member.x + 4, first_member.y),
+    );
+    assert_eq!(
+        methods,
+        [crate::api::schema::Method::WorkspaceMove(
+            crate::api::schema::WorkspaceMoveParams {
+                workspace_id: "ws_3".into(),
+                insert_index: 1,
+            }
+        )]
+    );
+}
+
+#[test]
+fn move_to_group_lists_the_other_existing_groups() {
+    let mut state = grouped_state(grouped_snapshot(&[Some("data"), Some("ops"), None]));
+    let labels = |state: &ClientShellState| match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu
+            .items()
+            .iter()
+            .map(|item| item.label.to_string())
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+
+    state.open_workspace_context_menu("ws_3".into(), 1, 1);
+    let move_to = menu_index(&state, ClientContextMenuAction::MoveToGroup).expect("move item");
+    let mut outcome = ClientShellInput::default();
+    state.activate_context_menu_item(move_to, &mut outcome);
+    assert_eq!(labels(&state), ["data", "ops", "New group..."]);
+    let ops = menu_index(&state, ClientContextMenuAction::PickGroup(1)).expect("ops item");
+    let mut outcome = ClientShellInput::default();
+    state.activate_context_menu_item(ops, &mut outcome);
+    let request = set_group_request(&outcome).expect("pick request");
+    assert_eq!(request.workspace_ids, ids(&["ws_3"]));
+    assert_eq!(request.group.as_deref(), Some("ops"));
+
+    state.open_workspace_context_menu("ws_1".into(), 1, 1);
+    let move_to = menu_index(&state, ClientContextMenuAction::MoveToGroup).expect("move item");
+    state.activate_context_menu_item(move_to, &mut ClientShellInput::default());
+    assert_eq!(labels(&state), ["ops", "New group..."]);
+    let new_group = menu_index(&state, ClientContextMenuAction::NewGroup).expect("new item");
+    state.activate_context_menu_item(new_group, &mut ClientShellInput::default());
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+            title: "new group",
+            target: ClientRenameTarget::WorkspaceGroup { ref workspace_ids },
+            ..
+        })) if workspace_ids == &ids(&["ws_1"])
     ));
 }
 

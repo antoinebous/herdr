@@ -326,7 +326,8 @@ fn workspace_click_waits_for_release_and_drag_reorders_by_stable_id() {
         state.chrome_drag,
         Some(ClientChromeDrag::Workspace {
             ref source_workspace_id,
-            target: Some((None, _)),
+            target: Some(WorkspaceDropTarget { before: None, .. }),
+            ..
         }) if source_workspace_id == "ws_1"
     ));
     let frame = state.compose(106, 24).expect("workspace drop indicator");
@@ -418,7 +419,7 @@ fn duplicate_repo_parent_drag_does_not_target_its_own_move_block() {
     }
     assert!(
         matches!(state.chrome_drag.as_ref(), Some(ClientChromeDrag::Workspace {
-        target: Some((Some(workspace_id), _)), ..
+        target: Some(WorkspaceDropTarget { before: Some(workspace_id), .. }), ..
     }) if workspace_id == "ws_duplicate")
     );
     let drop = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {

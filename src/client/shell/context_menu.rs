@@ -4,7 +4,10 @@ impl ClientContextMenuOverlay {
     pub(super) fn items(&self) -> Vec<ClientContextMenuItem> {
         use ClientContextMenuAction as Action;
 
-        let item = |label, action| ClientContextMenuItem { label, action };
+        let item = |label: &'static str, action| ClientContextMenuItem {
+            label: label.into(),
+            action,
+        };
         let mut items = match &self.target {
             ClientContextMenuTarget::Workspace { is_git: false, .. } => {
                 vec![item("Rename", Action::Rename), item("Close", Action::Close)]
@@ -45,6 +48,15 @@ impl ClientContextMenuOverlay {
                     Action::ToggleGroup,
                 ),
             ],
+            ClientContextMenuTarget::GroupPicker { groups, .. } => groups
+                .iter()
+                .enumerate()
+                .map(|(index, group)| ClientContextMenuItem {
+                    label: group.clone().into(),
+                    action: Action::PickGroup(index),
+                })
+                .chain(std::iter::once(item("New group...", Action::NewGroup)))
+                .collect(),
             ClientContextMenuTarget::WorkspaceGroup { collapsed, .. } => vec![
                 item("Rename group", Action::Rename),
                 item("Ungroup", Action::Ungroup),
@@ -160,6 +172,49 @@ impl ClientShellState {
         }));
     }
 
+    /// Lists the other existing groups, or asks for a new name when there are none.
+    fn open_group_picker(&mut self, workspace_id: String, x: u16, y: u16) {
+        let workspace_ids = self.workspace_with_worktree_children(&workspace_id);
+        let mut groups = Vec::<String>::new();
+        if let Some(snapshot) = self.snapshot.as_deref() {
+            let current = snapshot
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id == workspace_id)
+                .and_then(|workspace| workspace.group.as_deref());
+            for group in snapshot
+                .workspaces
+                .iter()
+                .filter_map(|workspace| workspace.group.as_deref())
+            {
+                if Some(group) != current && !groups.iter().any(|known| known == group) {
+                    groups.push(group.to_owned());
+                }
+            }
+        }
+        if groups.is_empty() {
+            self.open_new_group_prompt(workspace_ids);
+            return;
+        }
+        self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target: ClientContextMenuTarget::GroupPicker {
+                workspace_ids,
+                groups,
+            },
+            x,
+            y,
+            highlighted: 0,
+        }));
+    }
+
+    fn open_new_group_prompt(&mut self, workspace_ids: Vec<String>) {
+        self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+            title: "new group",
+            input: TextEditor::new("", false),
+            target: ClientRenameTarget::WorkspaceGroup { workspace_ids },
+        }));
+    }
+
     /// Ids of every workspace in `group`, in snapshot order.
     pub(super) fn group_member_ids(&self, group: &str) -> Vec<String> {
         self.snapshot
@@ -176,7 +231,7 @@ impl ClientShellState {
     }
 
     /// The workspace plus, for a repo parent, its linked worktrees in the same group.
-    fn workspace_with_worktree_children(&self, workspace_id: &str) -> Vec<String> {
+    pub(super) fn workspace_with_worktree_children(&self, workspace_id: &str) -> Vec<String> {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return vec![workspace_id.to_owned()];
         };
@@ -276,11 +331,28 @@ impl ClientShellState {
             return;
         };
         match menu.target {
+            ClientContextMenuTarget::Workspace { workspace_id, .. }
+                if action == ClientContextMenuAction::MoveToGroup =>
+            {
+                self.open_group_picker(workspace_id, menu.x, menu.y)
+            }
             ClientContextMenuTarget::Workspace {
                 workspace_id,
                 close_group,
                 ..
             } => self.activate_workspace_context_action(workspace_id, close_group, action, outcome),
+            ClientContextMenuTarget::GroupPicker {
+                workspace_ids,
+                groups,
+            } => match action {
+                ClientContextMenuAction::PickGroup(index) => {
+                    if let Some(group) = groups.get(index) {
+                        self.push_set_group(workspace_ids, Some(group.clone()), outcome);
+                    }
+                }
+                ClientContextMenuAction::NewGroup => self.open_new_group_prompt(workspace_ids),
+                _ => {}
+            },
             ClientContextMenuTarget::WorkspaceGroup { name, .. } => {
                 self.activate_group_context_action(name, action, outcome)
             }
@@ -361,26 +433,6 @@ impl ClientShellState {
                     self.toggle_collapsed_group(&endpoint_id, key);
                     self.persist_chrome_preferences(outcome);
                 }
-            }
-            ClientContextMenuAction::MoveToGroup => {
-                let group = self
-                    .snapshot
-                    .as_deref()
-                    .and_then(|snapshot| {
-                        snapshot
-                            .workspaces
-                            .iter()
-                            .find(|workspace| workspace.workspace_id == workspace_id)
-                    })
-                    .and_then(|workspace| workspace.group.clone())
-                    .unwrap_or_default();
-                self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
-                    title: "move to group",
-                    input: TextEditor::new(&group, false),
-                    target: ClientRenameTarget::WorkspaceGroup {
-                        workspace_ids: self.workspace_with_worktree_children(&workspace_id),
-                    },
-                }));
             }
             ClientContextMenuAction::RemoveFromGroup => {
                 let workspace_ids = self.workspace_with_worktree_children(&workspace_id);

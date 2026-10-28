@@ -508,7 +508,11 @@ impl ClientShellState {
         Some(last_index + 1)
     }
 
-    fn workspace_drop_target_at(&self, point: (u16, u16)) -> Option<(Option<String>, u16)> {
+    fn workspace_drop_target_at(
+        &self,
+        point: (u16, u16),
+        header_drag: bool,
+    ) -> Option<WorkspaceDropTarget> {
         if self.hits.workspace_body.height == 0
             || point.1 < self.hits.workspace_body.y.saturating_sub(1)
             || point.1 >= self.hits.new_workspace.y
@@ -522,6 +526,20 @@ impl ClientShellState {
             return None;
         }
         let snapshot = self.snapshot.as_deref()?;
+        // Dropping a workspace onto a header appends it to that group; groups do not nest.
+        if !header_drag {
+            if let Some(hit) = self.hits.workspace_groups.iter().find(|hit| {
+                hit.endpoint_id == self.active_endpoint_id && super::contains(hit.rect, point)
+            }) {
+                return Some(WorkspaceDropTarget {
+                    before: None,
+                    row: hit.rect.y,
+                    group: Some(hit.name.clone()),
+                    onto_header: true,
+                });
+            }
+        }
+        // A line inserts before the row below it and takes that row's group.
         let mut slots = self
             .hits
             .workspaces
@@ -540,21 +558,34 @@ impl ClientShellState {
                         .is_some_and(|workspace| workspace.workspace_id == hit.workspace_id)
                 })
             })
-            .map(|hit| (Some(hit.workspace_id.clone()), hit.rect.y.saturating_sub(1)))
+            .filter_map(|hit| {
+                let group = snapshot
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace_id == hit.workspace_id)?
+                    .group
+                    .clone();
+                (!header_drag || group.is_none()).then(|| WorkspaceDropTarget {
+                    before: Some(hit.workspace_id.clone()),
+                    row: hit.rect.y.saturating_sub(1),
+                    group,
+                    onto_header: false,
+                })
+            })
             .chain(
                 self.hits
                     .workspace_groups
                     .iter()
                     .filter(|hit| hit.endpoint_id == self.active_endpoint_id)
-                    .map(|hit| {
-                        (
-                            Some(hit.first_workspace_id.clone()),
-                            hit.rect.y.saturating_sub(1),
-                        )
+                    .map(|hit| WorkspaceDropTarget {
+                        before: Some(hit.first_workspace_id.clone()),
+                        row: hit.rect.y.saturating_sub(1),
+                        group: None,
+                        onto_header: false,
                     }),
             )
             .collect::<Vec<_>>();
-        slots.sort_by_key(|(_, row)| *row);
+        slots.sort_by_key(|slot| slot.row);
         let empty_collapsed_groups = HashSet::new();
         let collapsed_groups = self
             .collapsed_groups_for_endpoint(&self.active_endpoint_id)
@@ -625,14 +656,120 @@ impl ClientShellState {
                     .map(|workspace| workspace.workspace_id.clone()),
             });
             if last_bottom < self.hits.new_workspace.y {
-                slots.push((before, last_bottom));
+                slots.push(WorkspaceDropTarget {
+                    before,
+                    row: last_bottom,
+                    group: None,
+                    onto_header: false,
+                });
             }
         }
         slots
             .into_iter()
             .enumerate()
-            .min_by_key(|(index, (_, row))| (point.1.abs_diff(*row), *index))
+            .min_by_key(|(index, slot)| (point.1.abs_diff(slot.row), *index))
             .map(|(_, target)| target)
+    }
+
+    /// Requests for dropping a workspace (or a group header) on `target`.
+    fn workspace_drop_methods(
+        &self,
+        source_workspace_id: &str,
+        source_group: Option<&str>,
+        target: &WorkspaceDropTarget,
+    ) -> Vec<crate::api::schema::Method> {
+        use crate::api::schema::{Method, WorkspaceMoveBlockParams, WorkspaceSetGroupParams};
+
+        if let Some(group) = source_group {
+            return self
+                .group_move_method(group, target.before.as_deref())
+                .into_iter()
+                .collect();
+        }
+        let Some(source) = self.snapshot.as_deref().and_then(|snapshot| {
+            snapshot
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id == source_workspace_id)
+        }) else {
+            return Vec::new();
+        };
+        if source.group == target.group {
+            if target.onto_header {
+                return Vec::new();
+            }
+            return self
+                .workspace_move_method(source_workspace_id, target.before.as_deref())
+                .into_iter()
+                .collect();
+        }
+        if source
+            .worktree
+            .as_ref()
+            .is_some_and(|worktree| worktree.is_linked_worktree)
+        {
+            return Vec::new();
+        }
+        let workspace_ids = self.workspace_with_worktree_children(source_workspace_id);
+        let mut methods = vec![Method::WorkspaceSetGroup(WorkspaceSetGroupParams {
+            workspace_ids: workspace_ids.clone(),
+            group: target.group.clone(),
+        })];
+        // A header drop keeps the server's append-to-group placement.
+        if !target.onto_header
+            && target
+                .before
+                .as_ref()
+                .is_none_or(|before| !workspace_ids.contains(before))
+        {
+            methods.push(Method::WorkspaceMoveBlock(WorkspaceMoveBlockParams {
+                workspace_ids,
+                before_workspace_id: target.before.clone(),
+            }));
+        }
+        methods
+    }
+
+    /// Moves every member of `group` as one block, or `None` when nothing changes.
+    fn group_move_method(
+        &self,
+        group: &str,
+        before_workspace_id: Option<&str>,
+    ) -> Option<crate::api::schema::Method> {
+        let snapshot = self.snapshot.as_deref()?;
+        let workspace_ids = snapshot
+            .workspaces
+            .iter()
+            .filter(|workspace| workspace.group.as_deref() == Some(group))
+            .map(|workspace| workspace.workspace_id.clone())
+            .collect::<Vec<_>>();
+        if before_workspace_id.is_some_and(|target| workspace_ids.iter().any(|id| id == target)) {
+            return None;
+        }
+        let mut desired = snapshot
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.workspace_id.as_str())
+            .filter(|id| !workspace_ids.iter().any(|member| member == id))
+            .collect::<Vec<_>>();
+        let insert = before_workspace_id
+            .and_then(|target| desired.iter().position(|id| *id == target))
+            .unwrap_or(desired.len());
+        desired.splice(insert..insert, workspace_ids.iter().map(String::as_str));
+        if snapshot
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.workspace_id.as_str())
+            .eq(desired)
+        {
+            return None;
+        }
+        Some(crate::api::schema::Method::WorkspaceMoveBlock(
+            crate::api::schema::WorkspaceMoveBlockParams {
+                workspace_ids,
+                before_workspace_id: before_workspace_id.map(str::to_owned),
+            },
+        ))
     }
 
     fn workspace_move_method(
@@ -645,43 +782,6 @@ impl ClientShellState {
             .workspaces
             .iter()
             .find(|workspace| workspace.workspace_id == source_workspace_id)?;
-        // Grouped workspaces only drag through their header, which moves the whole group.
-        if let Some(group) = source.group.as_deref() {
-            let workspace_ids = snapshot
-                .workspaces
-                .iter()
-                .filter(|workspace| workspace.group.as_deref() == Some(group))
-                .map(|workspace| workspace.workspace_id.clone())
-                .collect::<Vec<_>>();
-            if before_workspace_id.is_some_and(|target| workspace_ids.iter().any(|id| id == target))
-            {
-                return None;
-            }
-            let mut desired = snapshot
-                .workspaces
-                .iter()
-                .map(|workspace| workspace.workspace_id.as_str())
-                .filter(|id| !workspace_ids.iter().any(|member| member == id))
-                .collect::<Vec<_>>();
-            let insert = before_workspace_id
-                .and_then(|target| desired.iter().position(|id| *id == target))
-                .unwrap_or(desired.len());
-            desired.splice(insert..insert, workspace_ids.iter().map(String::as_str));
-            if snapshot
-                .workspaces
-                .iter()
-                .map(|workspace| workspace.workspace_id.as_str())
-                .eq(desired)
-            {
-                return None;
-            }
-            return Some(crate::api::schema::Method::WorkspaceMoveBlock(
-                crate::api::schema::WorkspaceMoveBlockParams {
-                    workspace_ids,
-                    before_workspace_id: before_workspace_id.map(str::to_owned),
-                },
-            ));
-        }
         if source
             .worktree
             .as_ref()
@@ -728,10 +828,11 @@ impl ClientShellState {
                         .iter()
                         .filter(|workspace| workspace.workspace_id != source.workspace_id)
                         .filter(|workspace| {
-                            workspace
-                                .worktree
-                                .as_ref()
-                                .is_some_and(|candidate| candidate.key == worktree.key)
+                            workspace.group == source.group
+                                && workspace
+                                    .worktree
+                                    .as_ref()
+                                    .is_some_and(|candidate| candidate.key == worktree.key)
                         })
                         .map(|workspace| workspace.workspace_id.clone()),
                 )
@@ -1292,8 +1393,8 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                Some(ClientChromeDrag::Workspace { .. }) => {
-                    let target = self.workspace_drop_target_at(point);
+                Some(ClientChromeDrag::Workspace { source_group, .. }) => {
+                    let target = self.workspace_drop_target_at(point, source_group.is_some());
                     if let Some(ClientChromeDrag::Workspace {
                         target: current, ..
                     }) = self.chrome_drag.as_mut()
@@ -1312,11 +1413,15 @@ impl ClientShellState {
                     .max(mouse.row.abs_diff(press.start_row));
                 if delta >= 1 {
                     let source_workspace_id = press.workspace_id.clone();
+                    let source_group = press.group.clone();
                     let draggable = self.endpoint_workspace_is_draggable(press);
                     if draggable {
-                        if let Some(target) = self.workspace_drop_target_at(point) {
+                        if let Some(target) =
+                            self.workspace_drop_target_at(point, source_group.is_some())
+                        {
                             self.chrome_drag = Some(ClientChromeDrag::Workspace {
                                 source_workspace_id,
+                                source_group,
                                 target: Some(target),
                             });
                             outcome.repaint = true;
@@ -1383,12 +1488,14 @@ impl ClientShellState {
                     }
                     ClientChromeDrag::Workspace {
                         source_workspace_id,
+                        source_group,
                         target,
                     } => {
-                        if let Some((before_workspace_id, _)) = target {
-                            if let Some(method) = self.workspace_move_method(
+                        if let Some(target) = target {
+                            for method in self.workspace_drop_methods(
                                 &source_workspace_id,
-                                before_workspace_id.as_deref(),
+                                source_group.as_deref(),
+                                &target,
                             ) {
                                 self.push_endpoint_method(method, outcome);
                             }

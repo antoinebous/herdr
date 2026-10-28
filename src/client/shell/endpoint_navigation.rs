@@ -23,13 +23,11 @@ impl ClientShellState {
                         .find(|workspace| workspace.workspace_id == press.workspace_id)
                 })
                 .is_some_and(|workspace| {
-                    if workspace.group.is_some() {
-                        return press.group.is_some();
-                    }
-                    !workspace
-                        .worktree
-                        .as_ref()
-                        .is_some_and(|worktree| worktree.is_linked_worktree)
+                    press.group.is_some()
+                        || !workspace
+                            .worktree
+                            .as_ref()
+                            .is_some_and(|worktree| worktree.is_linked_worktree)
                 })
     }
 

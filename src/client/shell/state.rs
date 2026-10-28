@@ -182,6 +182,18 @@ pub(super) struct ClientWorkspacePress {
     pub(super) start_row: u16,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct WorkspaceDropTarget {
+    /// Insert before this workspace; `None` is the end of the list.
+    pub(super) before: Option<String>,
+    /// Sidebar row of the drop indicator.
+    pub(super) row: u16,
+    /// Group the dropped workspaces belong to afterwards.
+    pub(super) group: Option<String>,
+    /// Dropped onto a group header: append to that group.
+    pub(super) onto_header: bool,
+}
+
 pub(super) struct ClientTabPress {
     pub(super) tab_id: String,
     pub(super) workspace_id: String,
@@ -217,7 +229,9 @@ pub(super) enum ClientChromeDrag {
     },
     Workspace {
         source_workspace_id: String,
-        target: Option<(Option<String>, u16)>,
+        /// Set when dragging a group header, which moves the whole group.
+        source_group: Option<String>,
+        target: Option<WorkspaceDropTarget>,
     },
     PaneSplit {
         hit: PaneSplitHit,
@@ -537,6 +551,8 @@ pub(super) enum ClientContextMenuAction {
     RemoveWorktree,
     ToggleGroup,
     MoveToGroup,
+    PickGroup(usize),
+    NewGroup,
     RemoveFromGroup,
     Ungroup,
     NewTab,
@@ -567,6 +583,11 @@ pub(super) enum ClientContextMenuTarget {
         name: String,
         collapsed: bool,
     },
+    /// Second step of "Move to group...": existing groups plus a new one.
+    GroupPicker {
+        workspace_ids: Vec<String>,
+        groups: Vec<String>,
+    },
     Tab {
         tab_id: String,
         workspace_id: String,
@@ -589,7 +610,7 @@ pub(super) struct ClientContextMenuOverlay {
 }
 
 pub(super) struct ClientContextMenuItem {
-    pub(super) label: &'static str,
+    pub(super) label: std::borrow::Cow<'static, str>,
     pub(super) action: ClientContextMenuAction,
 }
 
