@@ -81,7 +81,7 @@ Native agent session restore is enabled by default. Disable it with:
 resume_agents_on_restore = false
 ```
 
-To skip resume for only some conversations, right-click a pane and choose `Don't resume on restart`, or right-click a workspace and choose `Don't resume agents on restart`. On a repository row with linked worktrees, the item reads `Don't resume group on restart` and applies to every workspace in the group. A skipped pane restores as a shell in its saved directory with its saved history, and keeps its session reference: choose `Resume on restart` and restart the Herdr server to resume it again. The choice is saved with the session; new panes, splits, and new worktrees still resume by default.
+To skip resume for only some conversations, right-click a pane and choose `Don't resume on restart`, or right-click a workspace and choose `Don't resume agents on restart`. On a repository row with linked worktrees, the item reads `Don't resume group on restart` and applies to every workspace in the group. A skipped pane restores as a shell in its saved directory with its saved history, with the agent's resume command already typed at the prompt but not run: press Enter in that pane to resume the conversation on demand, or clear the line to keep the shell. It keeps its session reference: choose `Resume on restart` and restart the Herdr server to resume it automatically again. The choice is saved with the session; new panes, splits, and new worktrees still resume by default.
 
 Herdr resumes panes that reported a native session reference through a current official Herdr integration, and panes whose agent reported its own resume command. See [Add Herdr support to your agent](/docs/add-herdr-support/).
 

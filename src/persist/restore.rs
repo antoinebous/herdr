@@ -546,11 +546,11 @@ fn restore_tab(
         let saved_agent_resume = saved_pane.and_then(saved_reported_resume);
         let saved_history =
             old_id.and_then(|old_id| history.and_then(|history| history.panes.get(old_id)));
+        let opted_out_of_resume =
+            workspace_skips_agent_resume || saved_pane.is_some_and(|pane| pane.skip_agent_resume);
         let startup = {
             let mut agent_restore = AgentRestoreState {
-                enabled: runtime_context.resume_agents_on_restore
-                    && !workspace_skips_agent_resume
-                    && !saved_pane.is_some_and(|pane| pane.skip_agent_resume),
+                enabled: runtime_context.resume_agents_on_restore && !opted_out_of_resume,
                 resumed_sessions: resumed_agent_sessions,
             };
             pane_restore_startup(
@@ -586,6 +586,13 @@ fn restore_tab(
             .unwrap_or_default();
         let imported_runtime = old_pane_id.and_then(|old_id| imported_panes.remove(&old_id));
         let was_imported = imported_runtime.is_some();
+        // Typed without Enter so the user resumes the conversation on demand.
+        let prefill_resume_command = opted_out_resume_command(
+            runtime_context.resume_agents_on_restore && opted_out_of_resume && !was_imported,
+            saved_agent_session,
+            saved_agent_resume,
+            &cwd,
+        );
         #[cfg(unix)]
         let handoff_agent_state = imported_runtime
             .as_ref()
@@ -664,6 +671,7 @@ fn restore_tab(
                     runtime_context.shell_config,
                     &launch_env,
                     startup.initial_history_ansi,
+                    prefill_resume_command.as_deref(),
                     runtime_context.events.clone(),
                     runtime_context.render_notify.clone(),
                     runtime_context.render_dirty.clone(),
@@ -683,6 +691,7 @@ fn restore_tab(
                     runtime_context.shell_config,
                     &launch_env,
                     startup.initial_history_ansi,
+                    prefill_resume_command.as_deref(),
                     runtime_context.events.clone(),
                     runtime_context.render_notify.clone(),
                     runtime_context.render_dirty.clone(),
@@ -834,12 +843,10 @@ fn pane_restore_startup<'a>(
     // resumable agent session and resume is enabled, do not replay saved pane
     // presentation history into that terminal, even when this pane is a
     // duplicate suppressed by session de-duplication.
-    let restore_plan = if !agent_restore.enabled {
-        None
-    } else if let Some(resume) = reported_resume {
-        Some(reported_resume_from_snapshot(resume).plan(cwd))
+    let restore_plan = if agent_restore.enabled {
+        saved_resume_plan(session, reported_resume, cwd)
     } else {
-        session.and_then(|session| restore_plan_for_snapshot(session, true))
+        None
     };
     let has_native_agent_restore = restore_plan.is_some();
     // Reserve before spawning so later panes in the same restore pass cannot
@@ -873,6 +880,32 @@ fn pane_restore_startup<'a>(
         duplicate_agent_session,
         reserved_agent_session,
     }
+}
+
+/// The command the agent reported, else one derived from its saved session.
+fn saved_resume_plan(
+    session: Option<&PaneAgentSessionSnapshot>,
+    reported_resume: Option<&PaneAgentResumeSnapshot>,
+    cwd: &std::path::Path,
+) -> Option<crate::agent_resume::AgentResumePlan> {
+    match reported_resume {
+        Some(resume) => Some(reported_resume_from_snapshot(resume).plan(cwd)),
+        None => session.and_then(|session| restore_plan_for_snapshot(session, true)),
+    }
+}
+
+/// Resume command to type, not run, at the prompt of a pane opted out of resume.
+fn opted_out_resume_command(
+    prefill: bool,
+    session: Option<&PaneAgentSessionSnapshot>,
+    reported_resume: Option<&PaneAgentResumeSnapshot>,
+    cwd: &std::path::Path,
+) -> Option<String> {
+    if !prefill {
+        return None;
+    }
+    saved_resume_plan(session, reported_resume, cwd)
+        .and_then(|plan| crate::agent_resume::shell_command_from_argv(&plan.argv))
 }
 
 fn saved_reported_resume(pane: &super::snapshot::PaneSnapshot) -> Option<&PaneAgentResumeSnapshot> {
@@ -1227,6 +1260,37 @@ mod tests {
             vec!["pi", "--session", pi_session_path.as_str()]
         );
         assert!(take_restore_plan_for_snapshot(&session, true, &mut resumed).is_none());
+    }
+
+    #[test]
+    fn opted_out_pane_gets_its_resume_command_without_running_it() {
+        let session = super::super::snapshot::PaneAgentSessionSnapshot {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            kind: crate::agent_resume::AgentSessionRefKind::Id,
+            value: "aa936082-4e10-4340-9df9-e0306e0d9d84".into(),
+        };
+        let reported = super::super::snapshot::PaneAgentResumeSnapshot {
+            source: "herdr:codex".into(),
+            agent: "codex".into(),
+            argv: vec!["codex".into(), "resume".into(), "two words".into()],
+        };
+        let cwd = std::path::Path::new("/tmp");
+
+        assert_eq!(
+            opted_out_resume_command(true, Some(&session), None, cwd).as_deref(),
+            Some("claude --resume aa936082-4e10-4340-9df9-e0306e0d9d84")
+        );
+        assert_eq!(
+            opted_out_resume_command(true, Some(&session), Some(&reported), cwd).as_deref(),
+            Some("codex resume 'two words'"),
+            "the agent's reported command wins, as for a real resume"
+        );
+        assert_eq!(
+            opted_out_resume_command(false, Some(&session), None, cwd),
+            None
+        );
+        assert_eq!(opted_out_resume_command(true, None, None, cwd), None);
     }
 
     #[test]

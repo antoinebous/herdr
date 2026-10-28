@@ -230,6 +230,9 @@ struct SpawnInitialState<'a> {
     detected_agent: Option<Agent>,
     history_ansi: Option<&'a str>,
     windows_powershell_prompt_cwd_reporting: bool,
+    /// Typed once the shell's line editor enables bracketed paste, so the
+    /// terminal does not echo it ahead of the first prompt.
+    typeahead_when_ready: Option<&'a str>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2363,6 +2366,7 @@ impl PaneRuntime {
             shell_config,
             launch_env,
             None,
+            None,
             events,
             render_notify,
             render_dirty,
@@ -2382,6 +2386,7 @@ impl PaneRuntime {
         shell_config: PaneShellConfig<'_>,
         launch_env: &PaneLaunchEnv,
         initial_history_ansi: Option<&str>,
+        typeahead_when_ready: Option<&str>,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<RenderSignal>,
@@ -2408,6 +2413,7 @@ impl PaneRuntime {
                 detected_agent: None,
                 history_ansi: initial_history_ansi,
                 windows_powershell_prompt_cwd_reporting,
+                typeahead_when_ready,
             },
             AgentDetection::Enabled,
         )
@@ -2781,6 +2787,11 @@ impl PaneRuntime {
             let reported_cwd = reported_cwd.clone();
             let compression_wake = compression.notifier();
             let rt = tokio::runtime::Handle::current();
+            // shortcut: shells that never enable bracketed paste (dash, old bash) never get it;
+            // add a timeout fallback if one of them needs the typeahead.
+            let mut typeahead = initial_state
+                .typeahead_when_ready
+                .map(|text| Bytes::copy_from_slice(text.as_bytes()));
             let on_read = Box::new(move |bytes: &[u8]| {
                 let _content_write_guard = match content_write_lock.lock() {
                     Ok(guard) => guard,
@@ -2825,9 +2836,11 @@ impl PaneRuntime {
                         );
                     }
                 }
-                PtyReadResult {
-                    terminal_responses: result.terminal_responses,
+                let mut terminal_responses = result.terminal_responses;
+                if typeahead.is_some() && terminal.bracketed_paste_enabled() {
+                    terminal_responses.extend(typeahead.take());
                 }
+                PtyReadResult { terminal_responses }
             });
             PaneRuntimeIo::Actor(PtyIoActor::spawn(PtyIoActorConfig {
                 pane_id: pane_id.raw(),

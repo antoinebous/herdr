@@ -196,6 +196,34 @@ pub fn session_ref_from_snapshot(
     })
 }
 
+/// The resume argv as one shell command line, quoting arguments that need it.
+pub fn shell_command_from_argv(argv: &[String]) -> Option<String> {
+    let mut parts = argv.iter();
+    let first = shell_quote(parts.next()?);
+    let mut command = first;
+    for part in parts {
+        command.push(' ');
+        command.push_str(&shell_quote(part));
+    }
+    Some(command)
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    if value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'_' | b'-' | b'.' | b'/' | b':' | b'@' | b'%' | b'+' | b'='
+            )
+    }) {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 pub fn plan(source: &str, agent: &str, session_ref: &AgentSessionRef) -> Option<AgentResumePlan> {
     if !is_official_agent_source(source, agent) {
         return None;
@@ -363,6 +391,21 @@ fn valid_session_path(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_command_from_argv_quotes_resume_arguments() {
+        let argv = vec![
+            "claude".to_string(),
+            "--resume".to_string(),
+            "session with ' quote".to_string(),
+        ];
+
+        assert_eq!(
+            shell_command_from_argv(&argv).as_deref(),
+            Some("claude --resume 'session with '\\'' quote'")
+        );
+        assert_eq!(shell_command_from_argv(&[]), None);
+    }
 
     fn absolute_test_path(name: &str) -> String {
         std::env::current_dir()
